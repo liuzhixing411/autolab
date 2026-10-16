@@ -1,0 +1,52 @@
+# Purdue RCAC Gautschi. Source: live `sinfo`, `sacctmgr show qos`, `slist`, `myquota` (checked 2026-10-16).
+# Live output of `slist`, `myquota`, `sinfo` always wins over this file.
+[site]
+name = "gautschi"
+host = "gautschi.rcac.purdue.edu"
+scheduler = "slurm"
+mem_gb_per_core = 1.96                       # cpu node: ~377 GB / 192 cores (same billing rule as Negishi: assumed, check `seff`)
+scratch_root = "/scratch/gautschi/$USER"    # 200 TB / 10M files quota; purge policy applies
+notes = [
+  "several login nodes behind round-robin DNS: /tmp is node-local, never keep state there between ssh calls",
+  "no computation on login nodes; use sinteractive or sbatch",
+  "$CLUSTER_SCRATCH may be empty inside batch jobs; use a fallback",
+  "system python3 is 3.9; use the anaconda python (full path below) or `module load anaconda`",
+  "run `seff <jobid>` after jobs and size the next request from real usage",
+  "short-job QOS: `standby` (idle nodes, <= 4 h, does not use the account's cores); `preemptible` runs up to 30 days but can be killed",
+  "a cpu node has 192 cores and ~377 GB; MPI compilers come from `module load openmpi/...`, not the default PATH",
+  "GPU partitions (ai: H100, smallgpu: L40, cocosys: H200) need a GPU account; RULES.md decides whether GPUs may be used",
+]
+
+[partitions.cpu]
+nodes = 336
+cores = 192
+mem_gb = 377
+[partitions.highmem]
+nodes = 6
+cores = 192
+mem_gb = 1511
+[partitions.ai]
+nodes = 20
+cores = 112
+[partitions.smallgpu]
+nodes = 6
+cores = 128
+[partitions.profiling]
+nodes = 2
+
+[env]
+conda_sh = "/apps/external/anaconda/2025.12/etc/profile.d/conda.sh"
+python = "/apps/external/anaconda/2025.12/bin/python3"
+
+# extra lines inserted into every job script before the run command
+preamble = [
+  'export RUNS_ROOT="${CLUSTER_SCRATCH:-/scratch/gautschi/$USER}"',
+]
+
+# Quality of service: `normal` = account queue (cpu-qpart up to 14 days, limited by autolab.toml
+# [slurm] max_hours); `standby` = idle nodes, <= 4 h; `preemptible` = up to 30 days, may be preempted.
+[qos.normal]
+[qos.standby]
+max_hours = 4
+[qos.preemptible]
+max_hours = 720

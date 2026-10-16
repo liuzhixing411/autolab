@@ -1,0 +1,10 @@
+title = "<<FILL: short title>>"
+kind = "<<FILL: experimental_data | simulation_data | reference_solution | figure | paper | notes | code | other>>"
+description = "<<FILL: what this is, how it was obtained, what each file contains>>"
+provenance = "<<FILL: source: who, which instrument/code, which paper>>"
+use_as = "<<FILL: evidence | validation_reference | background | constraint>>"
+keywords = ["<<FILL>>"]
+units = "<<optional: units of each column>>"
+conditions = "<<optional: operating conditions / parameters>>"
+date = "<<optional: YYYY-MM-DD>>"
+confidential = false

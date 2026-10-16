@@ -1,0 +1,10 @@
+# Field-neutral default. Copy domains/_template to start a new field.
+[domain]
+name = "generic"
+title = "General science (no field pack)"
+
+[validation]
+required_evidence = []
+
+[reviewer]
+hard_topics = []

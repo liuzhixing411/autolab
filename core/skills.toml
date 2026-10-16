@@ -1,0 +1,124 @@
+# Core skill routing — general science, no field assumptions.
+# Domain packs (domains/<d>/domain.toml) ADD routes and skills on top of this file.
+# `autolab skills resolve --role R --stage S --task T` shows the merged result.
+#
+# Roles: pi | student | reviewer | human
+# Stages (pi):      init ideation planning claim_review writing rebuttal retrospective
+# Tasks (student):  literature novelty experiment analysis theory figure section compile
+# Stages (review):  ideation claim_review manuscript_review
+
+[always]
+pi = ["research-wiki"]
+student = []
+reviewer = []
+
+# ── P0 / P1: framing and direction ──────────────────────────────────────────
+[[route]]
+role = "pi"
+stage = "init"
+skills = ["research-lit", "hypothesis-generation"]
+
+[[route]]
+role = "pi"
+stage = "ideation"
+skills = ["idea-discovery", "idea-creator", "research-refine-pipeline", "research-refine", "hypothesis-generation"]
+
+[[route]]
+role = "student"
+task = "literature"
+skills = ["research-lit", "arxiv", "semantic-scholar", "openalex", "paper-lookup", "wiki-enrich"]
+
+[[route]]
+role = "student"
+task = "novelty"
+skills = ["novelty-check", "paper-lookup"]
+
+[[route]]
+role = "reviewer"
+stage = "ideation"
+skills = ["research-review"]
+
+# ── P2: planning and execution ──────────────────────────────────────────────
+[[route]]
+role = "pi"
+stage = "planning"
+skills = ["experiment-plan", "ablation-planner", "experimental-design", "statistical-power"]
+
+[[route]]
+role = "student"
+task = "experiment"
+skills = ["experiment-bridge", "run-experiment", "experiment-queue", "monitor-experiment", "get-available-resources", "web-debug-search", "system-profile"]
+
+[[route]]
+role = "student"
+task = "analysis"
+skills = ["analyze-results", "statistical-analysis", "uncertainty-and-units"]
+
+[[route]]
+role = "student"
+task = "theory"
+skills = ["formula-derivation", "sympy"]
+
+# ── P3: claim gate ──────────────────────────────────────────────────────────
+[[route]]
+role = "pi"
+stage = "claim_review"
+skills = ["scientific-critical-thinking", "result-to-claim"]
+
+[[route]]
+role = "reviewer"
+stage = "claim_review"
+skills = ["experiment-audit", "result-to-claim", "kill-argument"]
+
+# ── P4 / P5: writing and the review loop ────────────────────────────────────
+[[route]]
+role = "pi"
+stage = "writing"
+skills = ["paper-writing", "paper-plan", "auto-review-loop", "auto-paper-improvement-loop"]
+
+[[route]]
+role = "student"
+stage = "writing"
+task = "section"
+skills = ["paper-write", "research-paper-writing", "citation-management"]
+
+[[route]]
+role = "student"
+task = "figure"
+skills = ["paper-figure", "figure-spec", "mermaid-diagram", "scientific-visualization"]
+
+[[route]]
+role = "student"
+task = "compile"
+skills = ["paper-compile"]
+
+[[route]]
+role = "student"
+stage = "polish"
+skills = ["humanizer"]
+
+[[route]]
+role = "reviewer"
+stage = "manuscript_review"
+skills = ["auto-review-loop", "paper-claim-audit", "citation-audit", "integrity-forensics", "kill-argument", "proof-checker"]
+
+[[route]]
+role = "human"
+stage = "final_review"
+skills = ["peer-review"]
+
+[[route]]
+role = "pi"
+stage = "rebuttal"
+skills = ["rebuttal"]
+
+# ── Meta ────────────────────────────────────────────────────────────────────
+[[route]]
+role = "pi"
+stage = "retrospective"
+skills = ["meta-optimize", "research-wiki"]
+
+[[route]]
+role = "human"
+stage = "skill_maintenance"
+skills = ["meta-apply", "skill-creator", "find-skills"]

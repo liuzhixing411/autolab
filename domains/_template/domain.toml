@@ -1,0 +1,10 @@
+# Field-neutral default. Copy domains/_template to start a new field.
+[domain]
+name = "CHANGE_ME"
+title = "CHANGE_ME"
+
+[validation]
+required_evidence = []
+
+[reviewer]
+hard_topics = []

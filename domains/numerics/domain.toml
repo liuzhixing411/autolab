@@ -1,0 +1,31 @@
+# Domain pack: numerical methods and HPC algorithms (correctness + performance claims).
+[domain]
+name = "numerics"
+title = "Numerical methods and HPC algorithms"
+
+[[route]]
+role = "student"
+task = "experiment"
+skills = ["statistical-analysis"]
+
+[[route]]
+role = "pi"
+stage = "planning"
+skills = ["statistical-analysis"]
+
+# Claims cannot enter findings/ without these files listed in claim.md [validation].
+[validation]
+required_evidence = ["reference_agreement", "timing_protocol"]
+recommended_evidence = ["scaling_study", "worst_case_analysis", "failure_cases"]
+
+[reviewer]
+hard_topics = ["dynamic connectivity", "connectivity", "union-find", "deletion", "worst case",
+               "worst-case", "complexity", "amortized", "lower bound", "MPI", "parallel",
+               "correctness proof", "invariant", "speedup"]
+
+[literature]
+preferred_sources = ["openalex", "semantic-scholar", "arxiv"]
+note = "Computational physics journals are often paywalled; computer science papers usually have open versions."
+
+[overrides.gates]
+context_pack_max_items = 15

@@ -1,0 +1,36 @@
+# Template for a new cluster. Copy to sites/<name>.toml, fill in from `sinfo`, `sacctmgr show qos`
+# and your center's documentation, then set `site = "<name>"` in the project's autolab.toml.
+# Only SLURM is supported as a scheduler; use sites/local.toml for a machine without one.
+[site]
+name = "mycluster"
+host = "login.mycluster.example.edu"
+scheduler = "slurm"
+# If the center bills memory as cores (allocated cores = max(cpus, mem / mem_per_core)), set the
+# GB per core here; the framework then warns and asks for a reason before large memory requests.
+# Remove the line if memory is not billed this way.
+mem_gb_per_core = 2.0
+scratch_root = "/scratch/$USER"
+# Facts the agents should know (appended to CLAUDE.md and the student agents as "Cluster notes").
+notes = [
+  "no computation on login nodes; use sbatch",
+  "short-job QOS: `<name>` (<= N h); use it when the account queue is long",
+  "MPI compilers come from `module load <mpi>`",
+]
+
+# One table per partition the agents may use; `cores` is checked against nodes x tasks x cpus.
+[partitions.cpu]
+nodes = 100
+cores = 64
+mem_gb = 256
+
+[env]
+# Python 3.11+ used by the framework, and (optionally) conda for job scripts.
+conda_sh = "/path/to/anaconda/etc/profile.d/conda.sh"
+python = "/path/to/anaconda/bin/python3"
+# Extra lines inserted into every job script before the run command.
+preamble = []
+
+# Allowed QOS names. `max_hours` caps the walltime per QOS; the project's [slurm] max_hours applies too.
+[qos.normal]
+[qos.short]
+max_hours = 4

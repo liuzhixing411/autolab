@@ -1,0 +1,4 @@
+# No scheduler: slurm commands are unavailable; everything else works.
+[site]
+name = "local"
+scheduler = "none"

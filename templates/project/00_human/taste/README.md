@@ -1,0 +1,1 @@
+Put about 3 examples each into `good/` and `bad/`: a figure, a table, a paragraph of conclusions or a whole paper. Make the file name say why it is good or bad, e.g. `good/clear-mechanism_three-cases-agree.png`. Value grading calibrates its scale on these before grading new results.

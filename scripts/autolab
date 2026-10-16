@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+# Run autolab without installing it.
+HERE="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/.." && pwd)"
+[ -n "${AUTOLAB_PYTHON:-}" ] || source "$HERE/scripts/env.sh"
+export AUTOLAB_HOME="${AUTOLAB_HOME:-$HERE}"
+export PYTHONPATH="$HERE/src${PYTHONPATH:+:$PYTHONPATH}"
+export ARIS_REPO="${ARIS_REPO:-$HERE/third_party/aris}"
+exec "$AUTOLAB_PYTHON" -m autolab "$@"

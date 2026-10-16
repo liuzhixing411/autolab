@@ -1,0 +1,2 @@
+## Numerics: timing analysis
+Report median and spread over repeats for every configuration, split by pipeline stage (preparation, algorithm, communication). Fit scaling against the cost parameters only when the data cover a sufficient range; state the range. Write `results/reference_agreement.json` (steps_checked, mismatches, reference) and `results/timing_protocol.json` (hardware, versions, repeats, warmup, seeds) and cite them in the claim's `[validation]`.

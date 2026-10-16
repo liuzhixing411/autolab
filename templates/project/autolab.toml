@@ -1,0 +1,65 @@
+# autolab project config. Everything not set here comes from the framework defaults
+# and the domain pack (domains/<domain>/domain.toml).
+
+[project]
+name = "{{NAME}}"
+domain = "{{DOMAIN}}"            # change + `autolab skills mount` to switch field
+site = "{{SITE}}"                # sites/<site>.toml (local, negishi, gautschi, or your own from sites/_template.toml)
+framework_root = "{{FRAMEWORK_ROOT}}"
+
+[models]
+pi = "opus"                    # Claude Code aliases: opus | sonnet | haiku
+student_literature = "haiku"
+student_experiment = "sonnet"
+student_analysis = "sonnet"
+student_figure = "sonnet"
+student_writing = "sonnet"
+
+[reviewer]
+backend = "codex"                # codex | command (any CLI, see command below) | mock (tests only, fake reviews)
+# command = ["codex", "exec", "-m", "{model}", "-c", "model_reasoning_effort={effort}", "--sandbox", "read-only",
+#            "--skip-git-repo-check", "-C", "{workdir}", "-o", "{out_file}", "-"]   # the default; prompt arrives on stdin
+# Tiers by difficulty. light = non-verdict checks only. Models your Codex account offers: ~/.codex/models_cache.json
+[reviewer.tiers.light]
+model = "gpt-6-luna"
+effort = "high"
+verdict_allowed = false
+[reviewer.tiers.regular]
+model = "gpt-6-astra"
+effort = "xhigh"
+verdict_allowed = true
+[reviewer.tiers.deep]
+model = "gpt-6-astra"
+effort = "ultra"
+verdict_allowed = true
+
+[gates]
+human_debounce_minutes = 5       # a human edit counts after the file is untouched this long
+min_grade_to_accept = "B"
+max_review_rounds = 8
+stall_rounds = 2
+require_reading_receipts_tier = "A"
+
+[budget]
+total_usd = 0.0                  # hard cap for the whole run, enforced by scripts/run_pi.sh (0 = no cap)
+usd_per_day = 40.0
+usd_per_task = 5.0
+
+[slurm]
+account = ""                     # from `slist` on the cluster
+partition = "cpu"
+qos = "normal"
+max_cpus = 64                    # per job, all MPI ranks x cpus per rank (0 = no cap: the scheduler decides)
+max_mem_gb = 128                 # per node
+max_hours = 24
+max_gpus = 0
+conda_env = ""                   # full path, e.g. /home/<user>/.conda/envs/<ver>/<env>
+require_clean_git = true
+total_core_hours = 0             # cap for all jobs of this project, enforced by `autolab slurm submit` (0 = no cap)
+
+# Extra shell commands the agents may run without asking (rendered into .claude/settings.json by
+# `autolab skills mount`), e.g. compilers for an external code you approved. An entry with a "/" is
+# a project-relative program path. env: extra variables for the agent sessions ({root} = project).
+[agents]
+allow_bash = []                  # e.g. ["make", "gcc", "mpicc"]
+env = {}                         # e.g. { BASILISK = "{root}/tools/basilisk/src" }

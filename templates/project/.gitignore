@@ -1,0 +1,13 @@
+# large or machine-local outputs
+experiments/*/logs/
+experiments/*/run/
+*.tmp
+.tmp-*
+state/pi_logs/
+__pycache__/
+*.nbi
+*.nbc
+.venv/
+# full texts stay local: publisher PDFs and text extracted from them are not ours to share
+literature/pdf/
+literature/text/

@@ -1,0 +1,36 @@
+# Domain pack: computational fluid dynamics.
+# Everything field-specific lives in this folder; the core never mentions CFD.
+
+[domain]
+name = "cfd"
+title = "Computational fluid dynamics (incl. multiphase)"
+
+# Extra skills per role, merged after core/skills.toml routes.
+[[route]]
+role = "student"
+task = "experiment"
+skills = ["uncertainty-and-units"]
+
+[[route]]
+role = "pi"
+stage = "planning"
+skills = ["uncertainty-and-units"]
+
+# Claims cannot enter findings/ without these files listed in claim.md [validation].
+[validation]
+required_evidence = ["mesh_convergence"]
+recommended_evidence = ["time_step_convergence", "benchmark_comparison", "experiment_comparison"]
+
+# Reviews touching these topics are bumped one reviewer tier.
+[reviewer]
+hard_topics = ["turbulence model", "multiphase", "cavitation", "interface capturing",
+               "compressib", "wall function", "mesh independence", "grid convergence",
+               "boundary condition", "numerical diffusion", "bubble", "spray", "LES", "DNS"]
+
+[literature]
+preferred_sources = ["openalex", "semantic-scholar", "arxiv"]
+note = "Many CFD journals are paywalled; expect human_needed downloads."
+
+# Overrides of framework defaults for this field (same keys as autolab.toml).
+[overrides.gates]
+context_pack_max_items = 15

@@ -1,0 +1,44 @@
+# Purdue RCAC Negishi. Source: RCAC Negishi user guide and live `sinfo` (checked 2026-09-22).
+# Live output of `slist`, `myquota`, `sinfo` always wins over this file.
+[site]
+name = "negishi"
+host = "negishi.rcac.purdue.edu"
+scheduler = "slurm"
+mem_gb_per_core = 1.95                       # memory is billed as cores: 251 GB / 128 cores (64 GB request -> 33 cores, seen 2026-10-16)
+scratch_root = "/scratch/negishi/$USER"     # 200 TB / 2M files quota; purge policy applies
+notes = [
+  "8 login nodes behind round-robin DNS: /tmp is node-local, never keep state there between ssh calls",
+  "no computation on login nodes; use sinteractive or sbatch",
+  "$CLUSTER_SCRATCH may be empty inside batch jobs; use a fallback",
+  "conda envs live in a versioned nested path; activate by full path",
+  "system python3 is 3.6; use the anaconda python",
+  "run `seff <jobid>` after jobs and size the next request from real usage",
+  "short-job QOS: `standby` (idle nodes, <= 4 h, does not use the account's cores); use it when the account queue is long",
+  "a cpu node has 128 cores and ~251 GB; MPI compilers come from `module load` (e.g. openmpi), not the default PATH",
+]
+
+[partitions.cpu]
+nodes = 446
+cores = 128
+mem_gb = 251
+[partitions.highmem]
+nodes = 6
+[partitions.gpu]
+nodes = 5
+[partitions.profiling]
+nodes = 4
+
+[env]
+conda_sh = "/apps/external/apps/anaconda/2025.12/etc/profile.d/conda.sh"
+python = "/apps/external/apps/anaconda/2025.12/bin/python3"
+
+# extra lines inserted into every job script before the run command
+preamble = [
+  'export RUNS_ROOT="${CLUSTER_SCRATCH:-/scratch/negishi/$USER}"',
+]
+
+# Quality of service. `standby` runs on idle nodes of the cpu partition, usually starts within
+# minutes, and is limited to 4 hours; use it for short jobs when the account queue is long.
+[qos.normal]                    # account queue; walltime limited by autolab.toml [slurm] max_hours
+[qos.standby]
+max_hours = 4
