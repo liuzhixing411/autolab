@@ -70,7 +70,7 @@ Then edit `autolab.toml` in the project:
 
 | Section | Key | What to set |
 |---|---|---|
-| `[models]` | `pi`, `student_*` | Claude Code model aliases: `opus`, `sonnet`, `haiku` |
+| `[models]` | `pi`, `student_*` | Claude Code model aliases: `opus`, `sonnet`, `haiku`. `student_*` is each role's default; the PI picks a model per task by difficulty (haiku for mechanical, sonnet for standard, opus for hard or decisive work) |
 | `[reviewer]` | `backend`, `command`, `[reviewer.tiers.*].model` | The reviewer CLI and the models your account offers for the light / regular / deep tiers (for Codex: `~/.codex/models_cache.json`) |
 | `[budget]` | `total_usd` | Hard cap on agent spend for the whole run; the loop stops and asks you when it is reached (0 = no cap) |
 | `[slurm]` | `account` | Your SLURM account (e.g. from `slist` or `sacctmgr show assoc user=$USER`) |
@@ -128,7 +128,7 @@ How the loop behaves:
 
 - Each turn is a fresh `claude -p` session; the lab's memory is in files (`state/STATE.md`, task cards, handoff cards, findings).
 - Before each turn `autolab wake check` looks for anything new (human edits, handoff cards, escalations, job state changes). If nothing changed, the turn is skipped at no cost; a turn is forced after `PI_MAX_IDLE_MIN` minutes (default 45).
-- A turn is killed after `PI_TURN_TIMEOUT` seconds (default 3600).
+- The PI starts students in the background and reacts to each report as it arrives (continue, redirect another student, or escalate); the turn ends when every student has reported or been stopped. A turn is killed after `PI_TURN_TIMEOUT` seconds (default 3600).
 - The loop stops when `[budget] total_usd` is reached and asks you in `ACTION_NEEDED.md`.
 - tmux sessions live on one login node; `state/pi_status.json` (shared file system) says whether a turn is running, on which host.
 

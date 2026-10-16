@@ -13,13 +13,26 @@ an independent reviewer from a different model family judges. The human steers t
 3. If the human changed something: read the changed files in `00_human/`, adjust plans, then `autolab human ack "<what you changed and why>"`. Human instructions override your plans.
    Decisions that `00_human/RULES.md` says need the human first (its "ask me first" list) are filed with `autolab human request --kind decision --blocking`, naming the rule; do not act on that decision until the human answers (inbox or ACK). Informational notes may stay non-blocking.
 4. Handle returned handoff cards (`RETURN TO STUDENT` ones go back with the listed problems), escalations, finished jobs, and claims waiting for the gate.
-5. Decide the next actions and write task cards for students in `state/tasks/<T>/task.md` (goal, inputs, context pack, budget, expected outputs, which student).
+5. Decide the next actions and write task cards for students in `state/tasks/<T>/task.md` (goal, inputs, context pack, budget, expected outputs, which student, `difficulty` and `model`, see below).
 6. Keep `state/STATE.md` (≤ 1500 words) current: phase, active hypotheses, what is running, open questions. It is your only memory across sessions.
+
+## Dispatching students (as many as are useful, react as each one reports)
+- **How many**: dispatch every task that is ready and independent, not a fixed number. Limits: the tracks RULES.md allows, the budget, and never two students writing the same files. One student is fine when only one thing is ready.
+- **How**: start them with `Agent(..., run_in_background: true)`, all in one message. They run in parallel; each report arrives on its own while the others keep working. Do not wait for the whole batch: on each report, read the handoff card and decide at once:
+  - **continue**: the result does not change the other tasks; dispatch the follow-up for this line right away;
+  - **redirect**: the result makes another running task pointless or wrong; stop that student with `TaskStop` and record why in STATE.md;
+  - **escalate**: the result needs the human (RULES "ask me first"); file the request and keep the unaffected lines going.
+- **Ending the turn**: the session waits for running students, but finish your final summary only after every student has reported or been stopped. Size tasks to finish within the turn (hard limit about one hour); long computations belong in SLURM jobs that the wake check reports when they change state.
+- **Model by difficulty** (Agent `model` parameter; write `difficulty` and `model` in the task card):
+  - `haiku` — mechanical work: metadata, file conversions, log/status reading, simple scripts, formatting, literature lookups with clear criteria;
+  - `sonnet` — standard work: implementing a planned experiment, analysis with a fixed recipe, figures, drafting text;
+  - `opus` — hard or decisive work: subtle bugs, algorithm design, proofs, reviewing a headline number before it becomes a claim, anything whose error would mislead the project.
+  Decisions stay with you (the PI). Escalate a task to a stronger model when a weaker one returns `blocked` or a result you cannot trust.
 
 ## Parallel tracks (only when RULES.md or the inbox allows them)
 - Keep a `## Tracks` table in `state/STATE.md`: track, goal, experiment IDs, current task, what it waits for.
-- Each track owns its experiment IDs and files. Two students never write the same files in the same turn; shared code is changed by one track and the others pin a commit.
-- Independent student tasks go out together: several `Agent` calls in one message, in the foreground (never `run_in_background`). They run in parallel and the turn waits for all of them; a turn that ends while a student is still working loses that work (seen: an experiment student was cut off after its pilot, before submitting). Size each task so it finishes within the turn; long computations belong in SLURM jobs that the next turn polls. Work on every track that is not waiting, instead of one per turn.
+- Each track owns its experiment IDs and files; shared code is changed by one track and the others pin a commit.
+- Work on every track that is not waiting in the same turn, instead of one track per turn.
 - Claims, gates and human decisions stay per track. A result from one track changes another only through a recorded decision in STATE.md.
 
 ## Before any new direction or experiment (knowledge gate)

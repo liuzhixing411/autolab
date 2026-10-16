@@ -11,6 +11,10 @@ while [ $# -gt 0 ]; do case "$1" in
 source "$(dirname "$(readlink -f "$0")")/env.sh"
 cd "$PROJECT"
 MODEL="$("$AUTOLAB_PYTHON" -c 'import tomllib;print(tomllib.load(open("autolab.toml","rb"))["models"]["pi"])')"
+# The PI dispatches students in the background and reacts as each reports. By default `claude -p`
+# stops background tasks 10 min after the PI's last message (seen: a student cut off before
+# submitting its jobs); wait for them instead. PI_TURN_TIMEOUT still bounds the whole turn.
+export CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS="${PI_BG_WAIT_MS:-0}"
 # Untrusted folders silently drop project permissions (and possibly hooks): refuse to run unattended.
 if ! PYTHONPATH="$AUTOLAB_HOME/src" "$AUTOLAB_PYTHON" -c 'import sys,pathlib; from autolab.project import claude_trusted; sys.exit(0 if claude_trusted(pathlib.Path(".")) else 1)'; then
   echo "This project is not trusted by Claude Code yet. Run \`claude\` once in $PROJECT, accept the trust prompt, exit, then retry."
