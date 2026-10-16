@@ -21,7 +21,7 @@ os.environ["AUTOLAB_HOME"] = str(FW)
 from autolab import (cli, gates, handoff, hooks, human, knowledge, ledger, project,  # noqa: E402
                      reviewer, skills, slurm, tick)
 from autolab.config import Config  # noqa: E402
-from autolab.util import read_json, read_jsonl, write_json  # noqa: E402
+from autolab.util import read_frontmatter, read_json, read_jsonl, write_json  # noqa: E402
 
 FILLED = {
     "GOAL.md": "# Goal\nPredict bubble breakup in a submerged jet.\n",
@@ -63,6 +63,7 @@ def passing_plan(cfg: Config, eid="E001", topic="bubble breakup jet", keywords=(
     write(cfg.layout.experiments / eid / "plan.md", f"""+++
 id = "{eid}"
 context_pack = "{pack['id']}"
+hypotheses = ["H1"]
 hypothesis = "Breakup frequency scales with Weber number"
 prediction = "slope 0.5 +- 0.1"
 decision_rule = "if slope in range continue, else revisit model"
@@ -78,7 +79,13 @@ hours = 1.5
 
 ## Prior knowledge consulted
 {answers or '- none matched'}
+
+## Precision
+Unit: seed. Planned n = 5 seeds; pilot SD of the slope 0.08 gives a 95% CI half-width of about 0.1, enough to decide the rule.
 """)
+    hyp = cfg.layout.state / "HYPOTHESES.md"
+    if not hyp.is_file() or "<<FILL" in hyp.read_text(encoding="utf-8"):
+        write(hyp, "| H1 | - | Breakup frequency scales with Weber number | open | - | - | E001 |\n")
     for i in pack["items"]:
         if i["kind"] == "literature" and i["must_read"]:
             note = knowledge.note_template(cfg, i["id"])
@@ -267,8 +274,8 @@ budget_hours = 1.0
         self.assertFalse(res["ok"])
         self.assertIn(f"stale: new relevant item {new['id']}", " ".join(res["problems"]))
         plan = self.cfg.layout.experiments / "E001" / "plan.md"
-        plan.write_text(plan.read_text(encoding="utf-8") + f"- {new['id']}: different scaling regime; checked\n",
-                        encoding="utf-8")
+        plan.write_text(plan.read_text(encoding="utf-8").replace(
+            "\n## Precision", f"- {new['id']}: different scaling regime; checked\n\n## Precision"), encoding="utf-8")
         self.assertTrue(knowledge.check_plan(self.cfg, "E001")["ok"])
 
     def test_download_requests_only_tier_a_and_no_duplicates(self):
@@ -634,6 +641,45 @@ class Slurm(unittest.TestCase):
         self.cfg.data["slurm"]["max_cpus"] = 0                 # 0 = no project cap
         slurm.render(self.cfg, "E001")
 
+    def test_job_array_render_caps_and_state(self):
+        passing_plan(self.cfg)
+        plan = self.cfg.layout.experiments / "E001" / "plan.md"
+        plan.write_text(plan.read_text(encoding="utf-8").replace("mem_gb = 8", 'mem_gb = 8\narray = "0-9%4"'),
+                        encoding="utf-8")
+        r = slurm.resources(self.cfg, "E001")
+        self.assertEqual((r["array_size"], r["problems"]), (10, []))
+        text = slurm.render(self.cfg, "E001")[0].read_text()
+        self.assertIn("#SBATCH --array=0-9%4", text)
+        self.assertIn("%x-%A_%a.out", text)
+        self.assertEqual(slurm.validate(self.cfg, "E001")["core_hours_max"], round(r["billed_cpus"] * 1.5 * 10, 1))
+        multi = write(self.bin / "sacct_multi", "#!/bin/bash\nprintf 'COMPLETED\\nRUNNING\\nPENDING\\n'\n")
+        multi.chmod(0o755)
+        os.environ["AUTOLAB_SACCT"] = str(multi)
+        self.assertEqual(slurm.job_state("77"), "RUNNING")
+        bad = write(self.bin / "sacct_bad", "#!/bin/bash\nprintf 'COMPLETED\\nTIMEOUT\\nCOMPLETED\\n'\n")
+        bad.chmod(0o755)
+        os.environ["AUTOLAB_SACCT"] = str(bad)
+        self.assertEqual(slurm.job_state("77"), "TIMEOUT")
+        plan.write_text(plan.read_text(encoding="utf-8").replace('array = "0-9%4"', 'array = "x-y"'), encoding="utf-8")
+        self.assertIn("array", " ".join(slurm.resources(self.cfg, "E001")["problems"]))
+
+    def test_usage_recorded_after_finish(self):
+        passing_plan(self.cfg)
+        slurm.submit(self.cfg, "E001")
+        acct = write(self.bin / "sacct_usage", "#!/bin/bash\n"
+                     'if [[ "$*" == *TotalCPU* ]]; then\n'
+                     "  printf '4242|3600|01:00:00|4||16Gn\\n4242.batch|3600|01:00:00|4|3.5G|\\n'\n"
+                     "else echo COMPLETED; fi\n")
+        acct.chmod(0o755)
+        os.environ["AUTOLAB_SACCT"] = str(acct)
+        lines = slurm.record_usage(self.cfg)
+        self.assertEqual(len(lines), 1)
+        self.assertIn("CPU efficiency 25%", lines[0])
+        self.assertIn("peak memory 3.5 GB", lines[0])
+        rec = read_jsonl(self.cfg.layout.experiments / "E001" / "jobs_usage.jsonl")[0]
+        self.assertEqual((rec["cpu_efficiency"], rec["max_rss_gb"], rec["req_mem_gb"]), (0.25, 3.5, 16.0))
+        self.assertEqual(slurm.record_usage(self.cfg), [])                       # once per job
+
     def test_site_notes_rendered_and_core_is_site_neutral(self):
         claude_md = (self.root / "CLAUDE.md").read_text(encoding="utf-8")
         agent = (self.root / ".claude" / "agents" / "student-experiment.md").read_text(encoding="utf-8")
@@ -924,6 +970,109 @@ class TickAndCli(unittest.TestCase):
                            capture_output=True, text=True, env=env)
         self.assertEqual(p.returncode, 2)
         self.assertIn("belongs to the human", p.stderr)
+
+
+def skill_log(cfg: Config, *names: str) -> Path:
+    """A turn log with Skill-tool calls, shaped like claude -p stream-json."""
+    lines = [json.dumps({"type": "assistant", "message": {"content": [
+        {"type": "tool_use", "id": f"t{i}", "name": "Skill", "input": {"skill": n}}]}})
+        for i, n in enumerate(names)]
+    p = cfg.layout.state / "pi_logs" / f"20991231-{len(list((cfg.layout.state / 'pi_logs').glob('*.jsonl'))) if (cfg.layout.state / 'pi_logs').is_dir() else 0}.jsonl"
+    return write(p, "\n".join(lines) + "\n")
+
+
+class Workflow(unittest.TestCase):
+    """Task cards with required skills, skill-use checks, precision gate, decision log, lessons."""
+
+    def setUp(self):
+        self.root, self.cfg = make_project()
+
+    def test_task_card_gets_required_skills_and_model(self):
+        from autolab import tasks
+        card = tasks.new(self.cfg, "Analyse E001 runs", "analysis")
+        meta, _ = read_frontmatter(card)
+        self.assertIn("analyze-results", meta["skills"])
+        self.assertIn("verification-before-completion", meta["skills"])   # always required for students
+        self.assertEqual(meta["model"], "sonnet")
+        exp = read_frontmatter(tasks.new(self.cfg, "Build solver", "experiment", difficulty="hard"))[0]
+        self.assertEqual(exp["model"], "opus")
+        self.assertIn("run-experiment", exp["skills"])
+        self.assertIn("test-driven-development", exp["skills"])
+        self.assertNotEqual(meta["id"], exp["id"])
+        dbg = read_frontmatter(tasks.new(self.cfg, "Find the mismatch", "experiment", task="debug",
+                                         difficulty="mechanical"))[0]
+        self.assertIn("systematic-debugging", dbg["skills"])
+        self.assertEqual(dbg["model"], "haiku")
+        with self.assertRaises(ValueError):
+            tasks.new(self.cfg, "x", "analysis", extra_skills=["no-such-skill"])
+
+    def test_handoff_requires_invoked_skills(self):
+        from autolab import tasks
+        card_dir = tasks.new(self.cfg, "Analyse", "analysis").parent
+        body = ('+++\ntask_id = "T001"\nstatus = "done"\nplan_followed = "yes"\nconfidence = "medium"\n'
+                'needs_pi_decision = false\nskills_used = [{used}]\n+++\n\n## Result\nno numbers\n\n'
+                '## Deviations from plan\nnone\n\n## Anomalies\nnone after checking\n\n## Suggested next steps\nmore\n')
+        card = write(card_dir / "handoff.md", body.format(used='"analyze-results"'))
+        res = handoff.validate_in(self.cfg, card)
+        self.assertFalse(res["ok"])
+        self.assertIn("verification-before-completion", " ".join(res["problems"]))
+        card.write_text(body.format(used='"analyze-results", "verification-before-completion"'), encoding="utf-8")
+        self.assertTrue(handoff.validate_in(self.cfg, card)["ok"])                 # no logs: unverifiable, warns
+        skill_log(self.cfg, "analyze-results")                                     # now logs exist
+        res = handoff.validate_in(self.cfg, card)
+        self.assertFalse(res["ok"])
+        self.assertIn("never invoked", " ".join(res["problems"]))
+        skill_log(self.cfg, "verification-before-completion")
+        self.assertTrue(handoff.validate_in(self.cfg, card)["ok"])
+
+    def test_plan_gate_precision_hypotheses_and_planning_skills(self):
+        res, _ = passing_plan(self.cfg)
+        self.assertTrue(res["ok"], res)
+        plan = self.cfg.layout.experiments / "E001" / "plan.md"
+        text = plan.read_text(encoding="utf-8")
+        plan.write_text(text.split("## Precision")[0], encoding="utf-8")
+        self.assertIn("Precision", " ".join(knowledge.check_plan(self.cfg, "E001")["problems"]))
+        plan.write_text(text.replace('hypotheses = ["H1"]', 'hypotheses = ["H9"]'), encoding="utf-8")
+        self.assertIn("H9", " ".join(knowledge.check_plan(self.cfg, "E001")["problems"]))
+        plan.write_text(text, encoding="utf-8")
+        skill_log(self.cfg, "experiment-plan")                                     # statistical-power missing
+        self.assertIn("statistical-power", " ".join(knowledge.check_plan(self.cfg, "E001")["problems"]))
+        skill_log(self.cfg, "statistical-power")
+        self.assertTrue(knowledge.check_plan(self.cfg, "E001")["ok"])
+
+    def test_decisions_are_append_only(self):
+        from autolab import tasks
+        d1 = tasks.decide(self.cfg, "rerun E003 with 8 seeds", "CI too wide", "E003/analysis/summary.json")
+        d2 = tasks.decide(self.cfg, "stop track B", "no gain possible", track="B")
+        self.assertEqual((d1, d2), ("D001", "D002"))
+        text = (self.cfg.layout.state / "DECISIONS.md").read_text(encoding="utf-8")
+        self.assertIn("rerun E003", text)
+        self.assertIn("track B", text)
+        d = lambda tool, **inp: hooks.decide({"tool_name": tool, "tool_input": inp}, self.root)[0]
+        self.assertFalse(d("Edit", file_path="state/DECISIONS.md"))
+        self.assertFalse(d("Bash", command="echo x >> state/DECISIONS.md"))
+        self.assertTrue(d("Bash", command='autolab decide "x" --why "y"'))
+        self.assertTrue(d("Bash", command="cat state/DECISIONS.md"))
+
+    def test_retrospective_due_and_lessons_reach_context_packs(self):
+        from autolab import tasks
+        self.assertEqual(tasks.retro_due(self.cfg, 25), 0)
+        self.assertIsNone(tasks.retro_due(self.cfg, 5))
+        write(self.cfg.layout.experience / "RETRO-25.md", "# retro\n")
+        self.assertIsNone(tasks.retro_due(self.cfg, 30))
+        self.assertEqual(tasks.retro_due(self.cfg, 45), 25)
+        lid = tasks.add_lesson(self.cfg, "Size seeds from a pilot variance before timing runs",
+                               "three seeds gave a CI from -1.3 to 15.9", ["timing", "seeds", "bubble"])
+        pack = knowledge.build_context_pack(self.cfg, "bubble timing study", ["bubble", "timing", "seeds"])
+        self.assertIn(lid, [i["id"] for i in pack["items"]])
+
+    def test_tick_reports_skill_use(self):
+        from autolab import tick
+        tick.run(self.cfg)
+        skill_log(self.cfg, "analyze-results", "analyze-results")
+        res = tick.run(self.cfg)
+        digest = Path(res["digest"]).read_text(encoding="utf-8")
+        self.assertIn("analyze-results x2", digest)
 
 
 if __name__ == "__main__":

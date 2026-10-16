@@ -1,0 +1,2 @@
+## autolab: dispatching students
+In this lab the subagents are the `student-*` roles. Follow CLAUDE.md "Dispatching students": start independent tasks with `run_in_background: true` in one message, choose the model per task by difficulty, react to each report as it arrives (continue, stop a student whose task became pointless with `TaskStop`, or escalate), and end the turn only when every student has reported or been stopped. Two students never write the same files.

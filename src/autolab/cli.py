@@ -123,7 +123,7 @@ def cmd_gate(a):
         res = gates.claim_gate(cfg, a.id)
     else:
         from autolab import handoff
-        res = handoff.validate(Path(a.id))
+        res = handoff.validate_in(cfg, Path(a.id))
         res.pop("meta", None)
     _out(res)
     return 0 if res.get("ok", res.get("decision") == "accepted") else 1
@@ -190,6 +190,23 @@ def cmd_budget(a):
     st = budget.status(cfg)
     _out(st)
     return 4 if st["over"] else 0
+
+
+def cmd_task(a):
+    from autolab import tasks
+    p = tasks.new(_cfg(a), a.title, a.student, a.task, a.stage, a.difficulty, a.model,
+                  [s for s in (a.skills or "").split(",") if s.strip()], a.track)
+    print(p)
+
+
+def cmd_decide(a):
+    from autolab import tasks
+    print(tasks.decide(_cfg(a), a.text, a.why, a.evidence, a.track, a.by))
+
+
+def cmd_lesson(a):
+    from autolab import tasks
+    print(tasks.add_lesson(_cfg(a), a.text, a.origin, (a.keywords or "").split(",")))
 
 
 def cmd_wake(a):
@@ -304,6 +321,34 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("action", choices=["record", "status"])
     s.add_argument("log", nargs="?")
     s.set_defaults(fn=cmd_budget)
+
+    s = sub.add_parser("task", help="new task card with the required skills of its route")
+    s.add_argument("action", choices=["new"])
+    s.add_argument("title")
+    s.add_argument("--student", required=True, choices=["literature", "experiment", "analysis", "figure", "writing"])
+    s.add_argument("--task", help="route task (literature, novelty, experiment, analysis, theory, figure, "
+                                  "section, compile, debug); default = the student role")
+    s.add_argument("--stage", help="route stage, e.g. writing or polish")
+    s.add_argument("--difficulty", default="standard", choices=["mechanical", "standard", "hard"])
+    s.add_argument("--model", choices=["haiku", "sonnet", "opus"], help="default: from difficulty")
+    s.add_argument("--skills", help="extra skills, comma-separated")
+    s.add_argument("--track", default="")
+    s.set_defaults(fn=cmd_task)
+
+    s = sub.add_parser("decide", help="append a decision to state/DECISIONS.md (append-only)")
+    s.add_argument("text")
+    s.add_argument("--why", required=True)
+    s.add_argument("--evidence", default="")
+    s.add_argument("--track", default="")
+    s.add_argument("--by", default="PI")
+    s.set_defaults(fn=cmd_decide)
+
+    s = sub.add_parser("lesson", help="record a rule learned in a retrospective (surfaces in context packs)")
+    s.add_argument("action", choices=["add"])
+    s.add_argument("text")
+    s.add_argument("--origin", required=True, help="what happened that taught this")
+    s.add_argument("--keywords", default="")
+    s.set_defaults(fn=cmd_lesson)
 
     s = sub.add_parser("wake", help="runner support: is a PI turn worth starting? (exit 0 wake, 3 idle)")
     s.add_argument("action", choices=["check", "mark"])

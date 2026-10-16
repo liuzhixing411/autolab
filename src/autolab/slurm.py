@@ -56,9 +56,17 @@ def resources(cfg: Config, eid: str, part: str | None = None) -> dict:
            "hours": float(res.get("hours", 1)), "gpus": int(res.get("gpus", 0)),
            # MPI: ntasks ranks over `nodes` nodes, `cpus` per rank; mem_gb is per node (SLURM --mem)
            "nodes": int(res.get("nodes", 1)), "ntasks": int(res.get("ntasks", 1)),
+           # job array: "0-25" or "0-25%8" (at most 8 at once); the command reads $SLURM_ARRAY_TASK_ID
+           "array": str(res.get("array", "")).strip(),
            "command": command, "part": part}
     out["total_cpus"] = out["ntasks"] * out["cpus"]
     problems = []
+    out["array_size"] = 1
+    if out["array"]:
+        try:
+            out["array_size"] = _array_size(out["array"])
+        except ValueError:
+            problems.append(f"array = '{out['array']}': use a range like \"0-25\" or \"0-25%8\" or a list \"1,3,5\"")
     qos_table = cfg.site.get("qos", {})
     if qos_table:
         if out["qos"] not in qos_table:
@@ -101,6 +109,22 @@ def resources(cfg: Config, eid: str, part: str | None = None) -> dict:
     return out
 
 
+def _array_size(spec: str) -> int:
+    body = spec.split("%")[0]
+    n = 0
+    for item in body.split(","):
+        item = item.split(":")[0]                       # "0-30:2" steps are rare; count the range
+        if "-" in item:
+            a, b = (int(x) for x in item.split("-"))
+            if b < a:
+                raise ValueError(spec)
+            n += b - a + 1
+        else:
+            int(item)
+            n += 1
+    return n
+
+
 def render(cfg: Config, eid: str, part: str | None = None) -> tuple[Path, dict]:
     r = resources(cfg, eid, part)
     if r["problems"]:
@@ -123,8 +147,10 @@ def render(cfg: Config, eid: str, part: str | None = None) -> tuple[Path, dict]:
         f"#SBATCH --cpus-per-task={r['cpus']}",
         f"#SBATCH --mem={r['mem_gb']}G",
         f"#SBATCH --time={hh:02d}:{mm:02d}:00",
-        f"#SBATCH --output={logs.as_posix()}/%x-%j.out",
+        f"#SBATCH --output={logs.as_posix()}/" + ("%x-%A_%a.out" if r["array"] else "%x-%j.out"),
     ]
+    if r["array"]:
+        lines.append(f"#SBATCH --array={r['array']}")
     if r["gpus"]:
         lines.append(f"#SBATCH --gres=gpu:{r['gpus']}")
     lines += ["", "set -eo pipefail"]
@@ -151,7 +177,7 @@ def validate(cfg: Config, eid: str, part: str | None = None) -> dict:
     proc = subprocess.run([_exe("sbatch"), "--test-only", str(path)], capture_output=True, text=True)
     # sbatch --test-only reports on stderr and exits 0 when the job would be accepted
     out = {"ok": proc.returncode == 0, "script": str(path), "billed_cpus": r["billed_cpus"],
-           "core_hours_max": round(r["billed_cpus"] * r["hours"], 1),
+           "core_hours_max": round(r["billed_cpus"] * r["hours"] * r["array_size"], 1),
            "output": (proc.stdout + proc.stderr).strip()}
     if r.get("warning"):
         out["warning"] = r["warning"]
@@ -198,7 +224,7 @@ def submit(cfg: Config, eid: str, part: str | None = None) -> dict:
     cap = float(cfg["slurm"].get("total_core_hours") or 0)
     if cap:
         used = core_hours_used(cfg)
-        request = r["billed_cpus"] * r["hours"]
+        request = r["billed_cpus"] * r["hours"] * r["array_size"]
         if used + request > cap:
             raise RuntimeError(f"core-hour cap: used {used:.1f} + this job up to {request:.1f} > {cap:.0f} "
                                "(slurm.total_core_hours); ask the human to raise it")
@@ -207,8 +233,8 @@ def submit(cfg: Config, eid: str, part: str | None = None) -> dict:
         raise RuntimeError(f"sbatch failed: {proc.stderr.strip()}")
     job = proc.stdout.strip().split(";")[0]
     rec = {"job": job, "eid": eid, "part": part, "submitted": now_iso(), "script": str(path),
-           "resources": {k: r[k] for k in ("partition", "qos", "nodes", "ntasks", "cpus", "total_cpus",
-                                           "billed_cpus", "mem_gb", "hours", "gpus")}}
+           "resources": {k: r[k] for k in ("partition", "qos", "nodes", "ntasks", "cpus", "total_cpus", "billed_cpus",
+                                           "mem_gb", "hours", "gpus", "array", "array_size")}}
     append_jsonl(cfg.layout.experiments / eid / "jobs.jsonl", rec)
     if r.get("warning"):
         rec = {**rec, "warning": r["warning"]}
@@ -247,13 +273,94 @@ def cancel(cfg: Config, eid: str, job: str | None = None) -> list[str]:
 
 
 def job_state(job: str) -> str:
+    """State of a job; for a job array, one state for the whole array: RUNNING/PENDING while any
+    task is unfinished, COMPLETED when all completed, else the first failure state."""
     proc = subprocess.run([_exe("sacct"), "-j", job, "-n", "-P", "-X", "-o", "State"],
                           capture_output=True, text=True)
-    state = proc.stdout.strip().splitlines()[0].split()[0] if proc.stdout.strip() else ""
-    if not state:
+    states = [ln.split()[0] for ln in proc.stdout.splitlines() if ln.strip()]
+    if not states:
         q = subprocess.run([_exe("squeue"), "-j", job, "-h", "-o", "%T"], capture_output=True, text=True)
-        state = q.stdout.strip() or "UNKNOWN"
-    return state
+        states = [ln.strip() for ln in q.stdout.splitlines() if ln.strip()] or ["UNKNOWN"]
+    if len(states) == 1:
+        return states[0]
+    unfinished = [s for s in states if s not in TERMINAL]
+    if unfinished:
+        return "RUNNING" if "RUNNING" in unfinished else unfinished[0]
+    failed = [s for s in states if s != "COMPLETED"]
+    return failed[0] if failed else "COMPLETED"
+
+
+def _secs(t: str) -> float:
+    """sacct times: [DD-][HH:]MM:SS[.mmm]"""
+    if not t:
+        return 0.0
+    days = 0
+    if "-" in t:
+        d, t = t.split("-", 1)
+        days = int(d)
+    parts = [float(x) for x in t.split(":")]
+    while len(parts) < 3:
+        parts.insert(0, 0.0)
+    return days * 86400 + parts[0] * 3600 + parts[1] * 60 + parts[2]
+
+
+def _gb(mem: str) -> float:
+    if not mem:
+        return 0.0
+    mem = mem.rstrip("nc")                       # ReqMem may end in n (per node) or c (per cpu)
+    unit = mem[-1].upper() if mem[-1].isalpha() else "K"
+    num = float(mem[:-1] if mem[-1].isalpha() else mem)
+    return num * {"K": 1 / 2**20, "M": 1 / 1024, "G": 1, "T": 1024}.get(unit, 1 / 2**20)
+
+
+def usage(job: str) -> dict:
+    """What a finished job really used (like `seff`), from sacct: CPU efficiency and peak memory,
+    so the next request can be sized from data instead of guesses."""
+    proc = subprocess.run([_exe("sacct"), "-j", job, "-n", "-P", "-o",
+                           "JobID,ElapsedRaw,TotalCPU,AllocCPUS,MaxRSS,ReqMem"], capture_output=True, text=True)
+    cpu_used = cpu_alloc = elapsed = 0.0
+    rss = req = 0.0
+    tasks = 0
+    for ln in proc.stdout.splitlines():
+        f = ln.strip().split("|")
+        if len(f) < 6:
+            continue
+        jid, el, tcpu, ncpu, maxrss, reqmem = f[:6]
+        if "." not in jid:                       # allocation line (one per array task)
+            tasks += 1
+            e = float(el or 0)
+            elapsed = max(elapsed, e)
+            cpu_alloc += e * float(ncpu or 0)
+            cpu_used += _secs(tcpu)
+            req = max(req, _gb(reqmem))
+        else:
+            rss = max(rss, _gb(maxrss))
+    return {"tasks": tasks, "elapsed_h": round(elapsed / 3600, 3),
+            "cpu_efficiency": round(cpu_used / cpu_alloc, 3) if cpu_alloc else None,
+            "max_rss_gb": round(rss, 2), "req_mem_gb": round(req, 1)}
+
+
+def record_usage(cfg: Config) -> list[str]:
+    """Record usage once for every finished job; returns digest lines for the newly recorded ones."""
+    lines = []
+    for e in sorted(cfg.layout.experiments.glob("E*")):
+        done = {r["job"] for r in read_jsonl(e / "jobs_usage.jsonl")}
+        for rec in read_jsonl(e / "jobs.jsonl"):
+            if "submitted" not in rec or rec["job"] in done:
+                continue
+            st = job_state(rec["job"])
+            if st not in TERMINAL:
+                continue
+            u = usage(rec["job"])
+            res = rec.get("resources", {})
+            append_jsonl(e / "jobs_usage.jsonl", {"job": rec["job"], "part": rec.get("part"), "state": st,
+                                                   "requested": res, **u, "at": now_iso()})
+            eff = f"{u['cpu_efficiency']:.0%}" if u["cpu_efficiency"] is not None else "n/a"
+            lines.append(f"{e.name}{'/' + rec['part'] if rec.get('part') else ''} job {rec['job']}: {st}, "
+                         f"CPU efficiency {eff} of {res.get('total_cpus', res.get('cpus', '?'))} cpus, peak memory "
+                         f"{u['max_rss_gb']} GB of {res.get('mem_gb', '?')} GB, {u['elapsed_h']} h of "
+                         f"{res.get('hours', '?')} h requested")
+    return lines
 
 
 def status(cfg: Config, eid: str | None = None) -> list[dict]:

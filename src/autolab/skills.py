@@ -60,13 +60,57 @@ def resolve(cfg: Config, role: str, stage: str | None = None, task: str | None =
     return out
 
 
+def required(cfg: Config, role: str, stage: str | None = None, task: str | None = None) -> list[str]:
+    """Skills that MUST be invoked (Skill tool) for this role/stage/task: `[always_required]`
+    plus each matching route's `required` list. `resolve` stays the wider menu."""
+    reg = registry(cfg)
+    names = list(reg.get("always_required", {}).get(role, []))
+    names += cfg.domain.get("always_required", {}).get(role, [])
+    for r in _routes(cfg):
+        if r.get("role") != role or ("stage" in r and r["stage"] != stage) or ("task" in r and r["task"] != task):
+            continue
+        names += r.get("required", [])
+    return list(dict.fromkeys(names))
+
+
+def invoked_since(cfg: Config, since: float = 0.0) -> dict[str, int]:
+    """Skill-tool invocations (PI and students) in the turn logs written after `since` (epoch s).
+    Empty when there are no logs (interactive use), so callers can tell 'unknown' from 'not used'."""
+    import json
+    out: dict[str, int] = {}
+    logs = cfg.layout.state / "pi_logs"
+    for log in sorted(logs.glob("*.jsonl")) if logs.is_dir() else []:
+        if log.stat().st_mtime < since:
+            continue
+        for line in log.read_text(encoding="utf-8", errors="ignore").splitlines():
+            if '"Skill"' not in line:
+                continue
+            try:
+                ev = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            for block in (ev.get("message") or {}).get("content") or []:
+                if isinstance(block, dict) and block.get("type") == "tool_use" and block.get("name") == "Skill":
+                    name = str((block.get("input") or {}).get("skill", "")).split(":")[-1]
+                    if name:
+                        out[name] = out.get(name, 0) + 1
+    return out
+
+
+def have_logs(cfg: Config) -> bool:
+    logs = cfg.layout.state / "pi_logs"
+    return logs.is_dir() and any(logs.glob("*.jsonl"))
+
+
 def all_routed(cfg: Config) -> set[str]:
     reg = registry(cfg)
     names = set()
-    for lst in list(reg.get("always", {}).values()) + list(cfg.domain.get("always", {}).values()):
-        names.update(lst)
+    for key in ("always", "always_required"):
+        for lst in list(reg.get(key, {}).values()) + list(cfg.domain.get(key, {}).values()):
+            names.update(lst)
     for r in _routes(cfg):
         names.update(r.get("skills", []))
+        names.update(r.get("required", []))
     return names
 
 

@@ -6,11 +6,18 @@
 # Stages (pi):      init ideation planning claim_review writing rebuttal retrospective
 # Tasks (student):  literature novelty experiment analysis theory figure section compile
 # Stages (review):  ideation claim_review manuscript_review
+#
+# `skills` is the menu for a route. `required` (a subset) must be invoked with the Skill tool:
+# `autolab task new` copies it into the task card, and the handoff and plan gates check the
+# turn logs that each one was really invoked. `[always_required]` applies to every task of a role.
 
 [always]
-pi = ["research-wiki"]
+pi = ["research-wiki", "dispatching-parallel-agents"]
 student = []
 reviewer = []
+
+[always_required]
+student = ["verification-before-completion"]
 
 # ── P0 / P1: framing and direction ──────────────────────────────────────────
 [[route]]
@@ -27,6 +34,7 @@ skills = ["idea-discovery", "idea-creator", "research-refine-pipeline", "researc
 role = "student"
 task = "literature"
 skills = ["research-lit", "arxiv", "semantic-scholar", "openalex", "paper-lookup", "wiki-enrich"]
+required = ["research-lit"]
 
 [[route]]
 role = "student"
@@ -43,27 +51,32 @@ skills = ["research-review"]
 role = "pi"
 stage = "planning"
 skills = ["experiment-plan", "ablation-planner", "experimental-design", "statistical-power"]
+required = ["experiment-plan", "statistical-power"]
 
 [[route]]
 role = "student"
 task = "experiment"
-skills = ["experiment-bridge", "run-experiment", "experiment-queue", "monitor-experiment", "get-available-resources", "web-debug-search", "system-profile"]
+skills = ["experiment-bridge", "run-experiment", "experiment-queue", "monitor-experiment", "get-available-resources", "web-debug-search", "system-profile", "systematic-debugging", "test-driven-development"]
+required = ["run-experiment"]
 
 [[route]]
 role = "student"
 task = "analysis"
 skills = ["analyze-results", "statistical-analysis", "uncertainty-and-units"]
+required = ["analyze-results"]
 
 [[route]]
 role = "student"
 task = "theory"
 skills = ["formula-derivation", "sympy"]
+required = ["formula-derivation"]
 
 # ── P3: claim gate ──────────────────────────────────────────────────────────
 [[route]]
 role = "pi"
 stage = "claim_review"
 skills = ["scientific-critical-thinking", "result-to-claim"]
+required = ["result-to-claim"]
 
 [[route]]
 role = "reviewer"
@@ -81,11 +94,13 @@ role = "student"
 stage = "writing"
 task = "section"
 skills = ["paper-write", "research-paper-writing", "citation-management"]
+required = ["paper-write"]
 
 [[route]]
 role = "student"
 task = "figure"
 skills = ["paper-figure", "figure-spec", "mermaid-diagram", "scientific-visualization"]
+required = ["scientific-visualization"]
 
 [[route]]
 role = "student"
@@ -122,3 +137,10 @@ skills = ["meta-optimize", "research-wiki"]
 role = "human"
 stage = "skill_maintenance"
 skills = ["meta-apply", "skill-creator", "find-skills"]
+
+# ── Debugging (any student, whenever something fails or looks wrong) ───────
+[[route]]
+role = "student"
+task = "debug"
+skills = ["systematic-debugging", "test-driven-development", "web-debug-search"]
+required = ["systematic-debugging"]

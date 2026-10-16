@@ -5,6 +5,7 @@ plan_followed = "yes"        # yes | with-deviation | no
 confidence = "medium"        # low | medium | high
 needs_pi_decision = false
 surprise = false             # true if the result fell outside the plan's predicted range
+skills_used = []             # every skill you invoked with the Skill tool (the task card's `skills` are required)
 # escalation = "state/escalations/T001.md"   # required when status = "blocked"
 +++
 

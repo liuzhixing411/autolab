@@ -56,7 +56,7 @@ def init(target: Path, name: str, domain: str, site: str, force: bool = False) -
 # Unattended runs (claude -p) cannot ask for approval, so the allowed commands are listed.
 # The PreToolUse hook still enforces the zone rules on top of this list.
 ALLOW = [
-    "Read", "Glob", "Grep", "Edit", "Write", "WebSearch", "WebFetch",
+    "Read", "Glob", "Grep", "Edit", "Write", "WebSearch", "WebFetch", "Skill", "TaskStop",
     "Bash(autolab:*)",
     "Bash(git status:*)", "Bash(git diff:*)", "Bash(git log:*)", "Bash(git add:*)",
     "Bash(git commit:*)", "Bash(git rev-parse:*)", "Bash(git init:*)", "Bash(git rm --cached:*)",

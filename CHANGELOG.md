@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.3.0 — 2026-10-16
+
+- **Skills are actually used.** In a 32-turn run the Skill tool was never called: students had no Skill tool and only a menu of names. Students now have the tool; routes in `core/skills.toml` have `required` skills; `autolab task new` puts them in the task card; the handoff and plan gates verify invocations in the turn logs; the tick digest reports skill use.
+- **Event-driven students.** The PI dispatches as many students as there are ready, independent tasks, in the background, and reacts to each report (continue, stop another student with `TaskStop`, escalate). The runner waits for background students (`CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=0`) instead of stopping them 10 minutes after the PI's last message.
+- **Model by difficulty**: `--difficulty mechanical|standard|hard` maps to haiku / sonnet / opus per task; the PI keeps all decisions.
+- **Hypothesis map and decision log**: `state/HYPOTHESES.md` (plans must name existing H-ids), append-only `state/DECISIONS.md` via `autolab decide`.
+- **Precision section** required by the plan gate (planned n and expected CI), with the `statistical-power` skill.
+- **Job arrays** (`array = "0-25%8"`) with array-aware state and caps; **usage records** (CPU efficiency, peak memory) after every job, shown in the digest.
+- **Retrospectives** every `gates.retro_every` ticks; `autolab lesson add` rules feed later context packs.
+- **New skills** from obra/superpowers (MIT): systematic-debugging, verification-before-completion, test-driven-development, dispatching-parallel-agents, with research-code overlays.
+- Inbox files named after a request (e.g. `...-A016-....md`) close it automatically.
+
 ## 0.2.0 — 2026-10-16
 
 First public version, after a multi-day unattended run on a SLURM cluster. Most changes come from problems seen in that run.

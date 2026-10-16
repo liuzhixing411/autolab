@@ -7,7 +7,7 @@ autolab runs a small "research lab" of AI agents that works on a scientific ques
 - **Reviewer** (a different model family, default OpenAI Codex CLI): independently checks whether evidence supports each claim, at a tier chosen by difficulty. Only claims that pass the PI *and* the reviewer become findings.
 - **You** steer through one folder (`00_human/`): goals, hard rules, what counts as valuable, uploads, ad-hoc instructions, pause/resume. The agents ask you for downloads and decisions in `00_human/ACTION_NEEDED.md`.
 
-Research methods come from mature open-source skill libraries (ARIS, K-Dense and others, 61 skills; see `THIRD_PARTY_NOTICES.md`). This repository adds the glue: project layout, gates, a SLURM backend, cost and compute caps, and a permission hook that keeps the agents inside their zones.
+Research methods come from mature open-source skill libraries (ARIS, K-Dense, obra/superpowers and others, 65 skills; see `THIRD_PARTY_NOTICES.md`). This repository adds the glue: project layout, gates, a SLURM backend, cost and compute caps, and a permission hook that keeps the agents inside their zones.
 
 > Status: v0.2, used for real multi-day runs on Purdue RCAC clusters (Negishi). Expect rough edges; read `CHANGELOG.md`.
 
@@ -193,6 +193,10 @@ human (00_human/) ──► PI turn: autolab tick → digest → decide → task
 ```
 
 - **Knowledge gate**: before any new direction, `autolab preflight` builds a context pack from failed ideas, rejected claims, findings, literature (with reading receipts for key papers) and your uploads. `plan.md` must answer every item, and `autolab gate plan` must pass before anything is submitted. Plans are locked once a job runs.
+- **Skills are invoked, not just listed**: `autolab task new` writes a task card with the model for its difficulty (haiku / sonnet / opus) and the *required* skills of its route (`required` in `core/skills.toml`). Students must invoke them with the Skill tool; the handoff gate and the plan gate check the turn logs and send work back when a required skill was never invoked. Each tick digest lists the skills used.
+- **Research map and memory**: `state/HYPOTHESES.md` (the hypotheses, their status and evidence; every plan names the H-ids it tests), `state/DECISIONS.md` (append-only, written by `autolab decide`), and a retrospective every `gates.retro_every` ticks whose rules (`autolab lesson add`) appear in later context packs.
+- **Precision before compute**: the plan gate requires a `## Precision` section (unit of replication, planned n, expected CI or detectable effect, source of the variance estimate), made with the `statistical-power` skill.
+- **Jobs**: many similar runs go out as one job array (`array = "0-25%8"`); after each job the digest shows its real CPU efficiency and peak memory so the next request is sized from data.
 - **Handoff cards**: students report in a fixed format (what was done, numbers with their source files, deviations, anomalies); numbers in experiment cards are checked against the result files.
 - **Claim gate**: the combined grade is the worse of the PI's and the reviewer's; a large disagreement goes to you. Review rounds are tracked in a ledger that escalates oscillation or stalls.
 - **Writing stage**: starts only after you approve readiness; the PI and the reviewer then alternate revise/review rounds until the reviewer has no remaining objections.

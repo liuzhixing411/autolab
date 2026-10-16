@@ -1,0 +1,2 @@
+## autolab: what "verified" means here
+Before you report a task as done: rerun the checks named in the plan or task card (correctness against the reference, conservation, the gate commands such as `autolab gate handoff`), and quote their actual output or the result file that holds it in the handoff card. Every number in the card must come from a file you name. "Should work" or "looks right" is not verification.

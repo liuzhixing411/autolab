@@ -24,7 +24,7 @@ def _new_handoffs(cfg: Config) -> list[dict]:
         mtime = card.stat().st_mtime
         if seen.get(key) == mtime:
             continue
-        res = handoff.validate(card)
+        res = handoff.validate_in(cfg, card)
         out.append({"card": key, "ok": res["ok"], "problems": res["problems"],
                     "status": res.get("meta", {}).get("status"),
                     "needs_pi_decision": res.get("meta", {}).get("needs_pi_decision")})
@@ -42,6 +42,8 @@ def _jobs(cfg: Config) -> list[dict]:
 
 
 def run(cfg: Config) -> dict:
+    tick_file = cfg.layout.state / "tick.json"
+    prev_t = tick_file.stat().st_mtime if tick_file.is_file() else 0.0
     counter = (read_json(cfg.layout.state / "tick.json", {}) or {}).get("n", 0) + 1
     write_json(cfg.layout.state / "tick.json", {"n": counter, "at": now_iso()})
 
@@ -51,12 +53,20 @@ def run(cfg: Config) -> dict:
     pdfs = knowledge.intake_pdf_drop(cfg)
     cards = _new_handoffs(cfg)
     jobs = _jobs(cfg)
+    try:
+        from autolab import slurm
+        used = slurm.record_usage(cfg)
+    except (RuntimeError, OSError):         # no scheduler here
+        used = []
     escalations = sorted(p.name for p in cfg.layout.escalations.glob("*.md"))
     claims = []
     for d in sorted(cfg.layout.claims.glob("C*")):
         g = read_json(d / "gate.json", {}) or {}
         claims.append(f"{d.name}: {g.get('decision', 'not gated')}")
     loops = {p.stem: ledger.check(cfg, p.stem) for p in cfg.layout.ledger.glob("*.json")}
+    from autolab import skills as _skills, tasks as _tasks
+    used_skills = _skills.invoked_since(cfg, prev_t) if prev_t else {}
+    retro_last = _tasks.retro_due(cfg, counter)
 
     L = [f"# Tick {counter} — {now_iso()}", ""]
     if human.stopped(cfg):
@@ -98,6 +108,9 @@ def run(cfg: Config) -> dict:
         L += ["## Escalations waiting"] + [f"- state/escalations/{e}" for e in escalations] + [""]
     if jobs:
         L += ["## Jobs"] + [f"- {j}" for j in jobs] + [""]
+    if used:
+        L += ["## Finished jobs: what they really used (size the next request from this)"]
+        L += [f"- {u}" for u in used] + [""]
     if claims:
         L += ["## Claims"] + [f"- {c}" for c in claims] + [""]
     if loops:
@@ -106,6 +119,17 @@ def run(cfg: Config) -> dict:
     b = budget.status(cfg)
     if b["cap_usd"]:
         L += [f"## Budget: ${b['spent_usd']:.2f} of ${b['cap_usd']:.2f} spent over {b['turns']} turns", ""]
+    if used_skills:
+        L += ["## Skills invoked since the last tick: " + ", ".join(f"{k} x{v}" for k, v in sorted(used_skills.items())), ""]
+    elif prev_t and _skills.have_logs(cfg):
+        L += ["## Skills invoked since the last tick: none. Task cards list required skills; students must invoke them.", ""]
+    if retro_last is not None:
+        L += [f"## Retrospective due (last at tick {retro_last or 'never'})",
+              f"Dispatch one student (analysis, sonnet) to write `experience/RETRO-{counter}.md` from state/DECISIONS.md, "
+              "rejected claims, escalations, blocked tasks and handoff anomalies since then: what went wrong or slow, "
+              "the root cause, and a rule that would have prevented it. Add each rule with "
+              "`autolab lesson add \"<rule>\" --origin \"<what happened>\" --keywords k1,k2`; context packs then "
+              "surface it before related work. Framework problems go to the human in ACTION_NEEDED.", ""]
     actions = human.open_actions(cfg)
     if actions:
         L += [f"## Open requests to the human: {len(actions)} (see 00_human/ACTION_NEEDED.md)", ""]

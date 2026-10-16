@@ -122,7 +122,7 @@ def sections(body: str) -> dict[str, str]:
 
 _ID_PREFIX = {"experiment": "E", "claim": "C", "finding": "F", "task": "T",
               "literature": "L", "upload": "U", "context_pack": "CP", "action": "A",
-              "issue": "I", "review": "R"}
+              "issue": "I", "review": "R", "decision": "D", "lesson": "LS"}
 
 
 def next_id(ids_file: Path, kind: str, width: int = 3) -> str:

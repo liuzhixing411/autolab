@@ -97,3 +97,18 @@ def validate(card: Path, metrics: Path | None = None) -> dict:
     if meta.get("status") == "blocked" and not meta.get("escalation"):
         problems.append("status=blocked needs `escalation` = path of the escalation report")
     return {"ok": not problems, "problems": problems, "warnings": warnings, "meta": meta}
+
+
+def validate_in(cfg, card: Path) -> dict:
+    """`validate` plus the project checks that need the config: required skills of the task card
+    listed in `skills_used` and really invoked (see tasks.check_skills_used)."""
+    from autolab import tasks
+    card = card if card.is_absolute() else cfg.layout.root / card
+    res = validate(card)
+    probs, warns = tasks.check_skills_used(cfg, card)
+    if probs:
+        res["problems"] = res.get("problems", []) + probs
+        res["ok"] = False
+    if warns:
+        res["warnings"] = res.get("warnings", []) + warns
+    return res

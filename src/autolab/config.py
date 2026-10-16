@@ -60,6 +60,7 @@ DEFAULTS: dict[str, Any] = {
         "max_review_rounds": 8,
         "stall_rounds": 2,
         "require_reading_receipts_tier": "A",
+        "retro_every": 20,                 # ticks between retrospectives (0 = never)
         "context_pack_max_items": 12,
         "download_request_tiers": ["A"],      # only these tiers trigger automatic download requests
     },

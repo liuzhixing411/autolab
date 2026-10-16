@@ -10,6 +10,7 @@
 | `skill-creator` | [anthropics/skills](https://github.com/anthropics/skills) @ dbd4588f9e10 | Apache License 2.0 (full text in `core/skills/skill-creator/LICENSE.txt`) | Anthropic, PBC |
 | `humanizer` | [blader/humanizer](https://github.com/blader/humanizer) v3.1.0 | MIT (`core/skills/humanizer/LICENSE`) | Copyright (c) 2025 Siqi Chen |
 | `research-paper-writing` | upstream repository not recorded | MIT (`core/skills/research-paper-writing/LICENSE`) | Copyright (c) 2026 Master-cai |
+| `systematic-debugging`, `verification-before-completion`, `test-driven-development`, `dispatching-parallel-agents` | [obra/superpowers](https://github.com/obra/superpowers) @ bb92a7774141 | MIT | Copyright (c) 2025 Jesse Vincent |
 
 The MIT licence text that applies to the MIT-licensed components above (with the respective copyright line):
 

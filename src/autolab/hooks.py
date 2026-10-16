@@ -26,6 +26,8 @@ HUMAN_WRITABLE = {"ACTION_NEEDED.md", "ACK.md"}
 # `autolab skills mount`, never by agents (an agent could otherwise raise its own budget or grant
 # itself tools; found while widening the allow list for compilers, 2026-10-16)
 HUMAN_CONFIG = ("autolab.toml", ".claude/settings", ".claude/agents/", "CLAUDE.md")
+# written only through `autolab decide`, so past decisions cannot be rewritten after the fact
+APPEND_ONLY = ("state/DECISIONS.md",)
 _AUTOLAB_CMD = re.compile(r"^\s*(autolab|python3?\s+-m\s+autolab|\S*python\S*\s+-m\s+autolab)\b")
 _RAW_SLURM = re.compile(r"(^|[;&|`(]\s*|\s)(sbatch|scancel)\b")
 _SEGMENT_SPLIT = re.compile(r"&&|\|\||;|\||\n")
@@ -129,6 +131,8 @@ def decide(event: dict, root: Path) -> tuple[bool, str]:
         if any(rel == p or rel.startswith(p) for p in HUMAN_CONFIG):
             return False, (f"{rel} is human-owned configuration (budget, caps, permissions, protocol). "
                            "Ask for a change with `autolab human request --kind approval`.")
+        if rel in APPEND_ONLY:
+            return False, f"{rel} is append-only: add entries with `autolab decide \"...\" --why \"...\"`."
         m = re.match(r"experiments/([^/]+)/plan\.md$", rel)
         if m and (root / "experiments" / m.group(1) / "jobs.jsonl").exists():
             return False, (f"plan.md of {m.group(1)} is locked (a job was submitted). "
@@ -163,6 +167,8 @@ def decide(event: dict, root: Path) -> tuple[bool, str]:
         if any(_writes_into(cmd, p) for p in HUMAN_CONFIG):
             return False, ("Shell command would modify human-owned configuration "
                            f"({', '.join(HUMAN_CONFIG)}); ask with `autolab human request --kind approval`.")
+        if any(_writes_into(cmd, p) for p in APPEND_ONLY):
+            return False, "state/DECISIONS.md is append-only: use `autolab decide`."
     return True, ""
 
 

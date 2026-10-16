@@ -1,0 +1,2 @@
+## autolab: tests for research code
+`superpowers:<name>` above means the mounted skill `<name>`. In scientific code a "test" is usually: agreement with a brute-force or library reference on small random inputs, an exact conservation or invariance check, a known analytic case, or a regression case from a past bug. Write it before changing the algorithm, keep it in the experiment's code folder, and run it in the pilot before any SLURM job.

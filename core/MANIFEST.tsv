@@ -60,3 +60,7 @@ find-skills	vercel-labs/skills	13e4063a1cf9	MIT
 skill-creator	anthropics/skills	dbd4588f9e10	Apache-2.0
 humanizer	blader/humanizer (v3.1.0)	-	MIT
 research-paper-writing	Master-cai (copyright holder per its LICENSE; upstream repository not recorded)	-	MIT
+systematic-debugging	obra/superpowers	bb92a7774141	MIT
+verification-before-completion	obra/superpowers	bb92a7774141	MIT
+test-driven-development	obra/superpowers	bb92a7774141	MIT
+dispatching-parallel-agents	obra/superpowers	bb92a7774141	MIT

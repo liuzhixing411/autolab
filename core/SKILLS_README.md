@@ -12,6 +12,7 @@ The PI, the students and the reviewer all load skills from this one folder. It c
 | anthropics/skills (Apache-2.0) | 1 | skill-creator: for writing local skills later |
 | blader/humanizer (MIT) | 1 | humanizer: removes machine-sounding prose |
 | research-paper-writing (MIT, see its LICENSE) | 1 | Paper-writing guidance |
+| obra/superpowers (MIT) | 4 | systematic-debugging, verification-before-completion, test-driven-development (students), dispatching-parallel-agents (PI) |
 
 The skills are kept as upstream wrote them (a few ARIS files contain Chinese examples or a Chinese patent-format reference). Field-neutral additions go into `core/overlays/` and domain additions into `domains/<domain>/overlays/`; overlays are appended when a project mounts its skills, so the upstream files stay unchanged.
 

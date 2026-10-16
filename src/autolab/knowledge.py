@@ -211,6 +211,9 @@ def _sources(cfg: Config) -> list[dict]:
     for e in read_jsonl(L.experience / "error-cookbook.jsonl"):
         items.append({"id": e.get("id", "ERR"), "kind": "known_error", "title": e.get("symptom", ""),
                       "text": " ".join(str(v) for v in e.values())})
+    for e in read_jsonl(L.experience / "lessons.jsonl"):        # rules from retrospectives
+        items.append({"id": e.get("id", "LS"), "kind": "lesson", "title": e.get("lesson", "")[:120],
+                      "text": " ".join(str(v) for v in e.values())})
     return items
 
 
@@ -218,7 +221,7 @@ def _sources_hash(cfg: Config) -> str:
     L = cfg.layout
     parts = []
     for p in (L.wiki / "ideas", L.rejected, L.findings, L.lit_index, L.uploads_registry,
-              L.experience / "error-cookbook.jsonl"):
+              L.experience / "error-cookbook.jsonl", L.experience / "lessons.jsonl"):
         parts.append(sha256_tree(p) if p.exists() else "-")
     return "|".join(parts)
 
@@ -360,10 +363,44 @@ def check_plan(cfg: Config, eid: str) -> dict:
                     else:
                         problems.append(f"{item['id']} has full text but receipt says '{rc.get('read_level')}'")
 
+    _check_precision_and_map(cfg, plan, meta, body, problems, warnings)
     result = {"eid": eid, "ok": not problems, "problems": problems, "warnings": warnings,
               "checked": now_iso(), "plan_hash": sha256_tree(plan)}
     write_json(exp / "plan_gate.json", result)
     return result
+
+
+def _check_precision_and_map(cfg: Config, plan: Path, meta: dict, body: str,
+                             problems: list[str], warnings: list[str]) -> None:
+    """Precision section (planned n, expected CI or detectable effect), hypothesis IDs that exist in
+    state/HYPOTHESES.md, and the planning skills really invoked. In the first long run an
+    under-powered design (3 seeds, CI from -1.3 to 15.9) cost two extra rounds of experiments."""
+    import re as _re
+    from autolab import skills
+    prec = _re.sub(r"<!--.*?-->", "", sections(body).get("precision", ""), flags=_re.S).strip()
+    if len(prec) < 60 or not _re.search(r"\d", prec):
+        problems.append("section '## Precision' is missing or too thin: give the unit of replication, planned n, "
+                        "the expected CI half-width or detectable effect, and where the variance estimate comes from "
+                        "(use the `statistical-power` skill)")
+    hyp = meta.get("hypotheses") or []
+    hfile = cfg.layout.state / "HYPOTHESES.md"
+    if not hyp:
+        problems.append("plan field 'hypotheses' is empty: name the H-ids from state/HYPOTHESES.md this tests")
+    elif not hfile.is_file():
+        problems.append("state/HYPOTHESES.md is missing: create the hypothesis map first")
+    else:
+        known = set(_re.findall(r"\bH\d+[a-z]?\b", hfile.read_text(encoding="utf-8")))
+        unknown = [h for h in hyp if h not in known]
+        if unknown:
+            problems.append(f"hypotheses {unknown} are not in state/HYPOTHESES.md")
+    need = skills.required(cfg, "pi", "planning")
+    if need and skills.have_logs(cfg):
+        seen = skills.invoked_since(cfg, plan.stat().st_mtime - 6 * 3600)
+        missing = [s for s in need if s not in seen]
+        if missing:
+            problems.append(f"planning skills {missing} were not invoked (Skill tool) while this plan was written")
+    elif need:
+        warnings.append(f"no turn logs: could not verify that {need} were invoked")
 
 
 def plan_gate_passed(cfg: Config, eid: str) -> bool:
