@@ -10,7 +10,7 @@ This folder is yours. Agents can only read it; the only files they write are `AC
 | `RULES.md` | Hard rules: what is forbidden, standards that must hold, budget, what needs your approval | Any time; **takes effect immediately**, conflicting tasks are cancelled |
 | `TASTE.md` | What you consider a valuable result | Any time; used from the next review on |
 | `taste/good/`, `taste/bad/` | ~3 examples each of good and bad results (figures, tables, paragraphs) to calibrate value grading | The earlier the better |
-| `inbox/` | Ad-hoc instructions or feedback, one .md file per note | Any time |
+| `inbox/` | Ad-hoc instructions or feedback, one .md file per note. To answer a request from ACTION_NEEDED, put its ID in the file name (e.g. `2026-10-16-A016-answer.md`): the request is then closed automatically | Any time |
 | `uploads/` | Your material: experimental data, reference solutions, figures, notes. One subfolder each, with a `meta.toml` (copy `_TEMPLATE/`) | Any time |
 | `pdf_drop/` | Papers the agents asked you to download, named by the ID in the request (e.g. `L0007.pdf`) | See ACTION_NEEDED |
 | `ACTION_NEEDED.md` | What the agents need from you (downloads, decisions, data). Change `[ ]` to `[x]` when done | Check often |

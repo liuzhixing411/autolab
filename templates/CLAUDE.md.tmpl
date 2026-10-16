@@ -19,7 +19,7 @@ an independent reviewer from a different model family judges. The human steers t
 ## Parallel tracks (only when RULES.md or the inbox allows them)
 - Keep a `## Tracks` table in `state/STATE.md`: track, goal, experiment IDs, current task, what it waits for.
 - Each track owns its experiment IDs and files. Two students never write the same files in the same turn; shared code is changed by one track and the others pin a commit.
-- Independent student tasks go out together: several `Agent` calls in one message. Work on every track that is not waiting, instead of one per turn.
+- Independent student tasks go out together: several `Agent` calls in one message, in the foreground (never `run_in_background`). They run in parallel and the turn waits for all of them; a turn that ends while a student is still working loses that work (seen: an experiment student was cut off after its pilot, before submitting). Size each task so it finishes within the turn; long computations belong in SLURM jobs that the next turn polls. Work on every track that is not waiting, instead of one per turn.
 - Claims, gates and human decisions stay per track. A result from one track changes another only through a recorded decision in STATE.md.
 
 ## Before any new direction or experiment (knowledge gate)

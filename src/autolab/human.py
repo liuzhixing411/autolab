@@ -6,6 +6,7 @@ Humans edit 00_human/ at any time. Agents never write there except ACTION_NEEDED
 
 from __future__ import annotations
 
+import re
 import time
 import tomllib
 from pathlib import Path
@@ -153,6 +154,26 @@ def resolve_actions(cfg: Config, needle: str, note: str) -> int:
     if n:
         p.write_text("\n".join(lines) + "\n", encoding="utf-8")
     return n
+
+
+def resolve_from_inbox(cfg: Config) -> list[tuple[str, str]]:
+    """Close open requests that the human answered with an inbox file named after them
+    (e.g. `inbox/2026-10-16-A016-decision.md`). Agents cannot tick ACTION_NEEDED themselves,
+    so answered requests used to stay open (seen 2026-10-16)."""
+    inbox = cfg.layout.inbox
+    if not inbox.is_dir():
+        return []
+    named: dict[str, str] = {}
+    for f in sorted(inbox.glob("*.md")):
+        for aid in re.findall(r"(?<![A-Za-z0-9])(A\d{3,})(?![0-9])", f.name):
+            named.setdefault(aid, f"00_human/inbox/{f.name}")
+    out = []
+    for line in open_actions(cfg):
+        m = re.match(r"- \[ \] \*\*(A\d+)\*\*", line)
+        if m and m.group(1) in named:
+            resolve_actions(cfg, f"**{m.group(1)}**", f"answered by the human in {named[m.group(1)]}")
+            out.append((m.group(1), named[m.group(1)]))
+    return out
 
 
 def open_actions(cfg: Config) -> list[str]:

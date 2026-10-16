@@ -46,6 +46,7 @@ def run(cfg: Config) -> dict:
     write_json(cfg.layout.state / "tick.json", {"n": counter, "at": now_iso()})
 
     changes = human.check_changes(cfg)
+    answered = human.resolve_from_inbox(cfg) if not changes["settling"] else []
     ups = human.scan_uploads(cfg)
     pdfs = knowledge.intake_pdf_drop(cfg)
     cards = _new_handoffs(cfg)
@@ -76,6 +77,8 @@ def run(cfg: Config) -> dict:
               "Read the changed files, re-plan if needed, then `autolab human ack \"what you did\"`.", ""]
     if changes["settling"]:
         L += [f"_Human is still editing: {', '.join(changes['settling'])} (not applied yet)._", ""]
+    if answered:
+        L += ["## Requests answered by the human (inbox)"] + [f"- {a}: read `{f}` and act on it" for a, f in answered] + [""]
     unfilled = human.unfilled_templates(cfg)
     if unfilled:
         L += [f"## Templates not filled by the human: {', '.join(unfilled)}", ""]

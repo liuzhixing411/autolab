@@ -887,6 +887,18 @@ class TickAndCli(unittest.TestCase):
         r = handoff.validate(e / "handoff.md")
         self.assertTrue(r["ok"], r["problems"])
 
+    def test_inbox_answer_closes_request(self):
+        aid = human.request_action(self.cfg, "decision", "stop or modify?", blocking=True)
+        other = human.request_action(self.cfg, "download", "get L0042")
+        write(self.cfg.layout.inbox / f"2026-10-16-{aid}-answer.md", "modify\n")
+        write(self.cfg.layout.inbox / "2026-10-16-unrelated.md", "note\n")
+        done = human.resolve_from_inbox(self.cfg)
+        self.assertEqual([a for a, _ in done], [aid])
+        open_ids = " ".join(human.open_actions(self.cfg))
+        self.assertNotIn(f"**{aid}**", open_ids)
+        self.assertIn(f"**{other}**", open_ids)
+        self.assertEqual(human.resolve_from_inbox(self.cfg), [])        # idempotent
+
     def test_wake_check(self):
         from autolab import wake
         go, why = wake.check(self.cfg)
