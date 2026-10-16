@@ -14,7 +14,8 @@ notes = [
   "system python3 is 3.6; use the anaconda python",
   "run `seff <jobid>` after jobs and size the next request from real usage",
   "short-job QOS: `standby` (idle nodes, <= 4 h, does not use the account's cores); use it when the account queue is long",
-  "a cpu node has 128 cores and ~251 GB; MPI compilers come from `module load` (e.g. openmpi), not the default PATH",
+  "a cpu node has 128 cores and ~251 GB",
+  "modules in job scripts: `source /etc/profile.d/modules.sh; source /etc/profile.d/z01_default_module.sh; module load openmpi` (openmpi 4.1.4, gcc 12.2.0); the Anaconda `mpicc` on PATH is broken, do not use it",
 ]
 
 [partitions.cpu]

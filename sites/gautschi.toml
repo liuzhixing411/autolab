@@ -13,7 +13,8 @@ notes = [
   "system python3 is 3.9; use the anaconda python (full path below) or `module load anaconda`",
   "run `seff <jobid>` after jobs and size the next request from real usage",
   "short-job QOS: `standby` (idle nodes, <= 4 h, does not use the account's cores); `preemptible` runs up to 30 days but can be killed",
-  "a cpu node has 192 cores and ~377 GB; MPI compilers come from `module load openmpi/...`, not the default PATH",
+  "a cpu node has 192 cores and ~377 GB",
+  "modules in job scripts: `source /etc/profile.d/modules.sh; source /etc/profile.d/z01_default_module.sh; module load openmpi` (openmpi 5.0.5, gcc 14.1.0)",
   "GPU partitions (ai: H100, smallgpu: L40, cocosys: H200) need a GPU account; RULES.md decides whether GPUs may be used",
 ]
 
