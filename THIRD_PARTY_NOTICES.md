@@ -5,12 +5,13 @@
 | Skills | Upstream | Licence | Copyright |
 |---|---|---|---|
 | 45 research skills + `shared-references/` | [wanshuiyin/Auto-claude-code-research-in-sleep](https://github.com/wanshuiyin/Auto-claude-code-research-in-sleep) @ 26b95cfa0d87 | MIT | Copyright (c) 2026 wanshuiyin |
-| 12 scientific skills | [K-Dense-AI/scientific-agent-skills](https://github.com/K-Dense-AI/scientific-agent-skills) @ a1043ef544e3 | MIT | Copyright (c) 2025 K-Dense Inc. |
+| 13 scientific skills | [K-Dense-AI/scientific-agent-skills](https://github.com/K-Dense-AI/scientific-agent-skills) @ a1043ef544e3 | MIT | Copyright (c) 2025 K-Dense Inc. |
 | `find-skills` | [vercel-labs/skills](https://github.com/vercel-labs/skills) @ 13e4063a1cf9 | MIT | Copyright (c) 2026 Vercel, Inc. |
 | `skill-creator` | [anthropics/skills](https://github.com/anthropics/skills) @ dbd4588f9e10 | Apache License 2.0 (full text in `core/skills/skill-creator/LICENSE.txt`) | Anthropic, PBC |
 | `humanizer` | [blader/humanizer](https://github.com/blader/humanizer) v3.1.0 | MIT (`core/skills/humanizer/LICENSE`) | Copyright (c) 2025 Siqi Chen |
 | `research-paper-writing` | upstream repository not recorded | MIT (`core/skills/research-paper-writing/LICENSE`) | Copyright (c) 2026 Master-cai |
 | `systematic-debugging`, `verification-before-completion`, `test-driven-development`, `dispatching-parallel-agents` | [obra/superpowers](https://github.com/obra/superpowers) @ bb92a7774141 | MIT | Copyright (c) 2025 Jesse Vincent |
+| `brainstorming-research-ideas`, `ara-rigor-reviewer` | [Orchestra-Research/AI-Research-SKILLs](https://github.com/Orchestra-Research/AI-Research-SKILLs) @ 773a52944ba4 | MIT | Copyright (c) 2025 Claude AI Research Skills Contributors |
 
 The MIT licence text that applies to the MIT-licensed components above (with the respective copyright line):
 

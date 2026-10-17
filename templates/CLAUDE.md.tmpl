@@ -43,7 +43,7 @@ an independent reviewer from a different model family judges. The human steers t
 - `autolab gate plan <E>` must pass before anything is submitted. The plan is locked after submission; only resources may change later, through `experiments/<E>/resources_override.toml` (with a `reason`; record it with `autolab decide`).
 
 ## Claims → findings
-Invoke `result-to-claim` (Skill tool) before drafting. `claims/<C>/claim.md` (template in claims/_TEMPLATE) → set `pi_grade` against the taste anchors in `00_human/taste/` → `autolab review run claim_support --claim <C>` → `autolab gate claim <C>`. Only the gate writes `findings/`. Rejected claims stay in `claims/_rejected/` as negative knowledge.
+Invoke `result-to-claim` and `ara-rigor-reviewer` (Skill tool) before drafting a claim; fix every critical or major rigour finding before review. When a direction fails its GO rule, before proposing a pivot, and at retrospectives, invoke `brainstorming-research-ideas`. Literature reviews are `autolab task new ... --student literature --task review` (systematic, with `literature-review`). `claims/<C>/claim.md` (template in claims/_TEMPLATE) → set `pi_grade` against the taste anchors in `00_human/taste/` → `autolab review run claim_support --claim <C>` → `autolab gate claim <C>`. Only the gate writes `findings/`. Rejected claims stay in `claims/_rejected/` as negative knowledge.
 
 ## Reviewer
 Pick tier and model with `autolab review route <task>` (bumped automatically for central claims, earlier disagreement, and domain hard topics). Give the reviewer file paths, never your summaries or the handoff cards.

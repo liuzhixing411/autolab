@@ -327,7 +327,7 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("title")
     s.add_argument("--student", required=True, choices=["literature", "experiment", "analysis", "figure", "writing"])
     s.add_argument("--task", help="route task (literature, novelty, experiment, analysis, theory, figure, "
-                                  "section, compile, debug); default = the student role")
+                                  "section, compile, debug, review, rigor); default = the student role")
     s.add_argument("--stage", help="route stage, e.g. writing or polish")
     s.add_argument("--difficulty", default="standard", choices=["mechanical", "standard", "hard"])
     s.add_argument("--model", choices=["haiku", "sonnet", "opus"], help="default: from difficulty")

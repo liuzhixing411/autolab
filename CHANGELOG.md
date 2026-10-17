@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.3.2 — 2026-10-17
+
+- Three more mature MIT skills, with overlays that map them onto autolab files: `brainstorming-research-ideas` and `ara-rigor-reviewer` (Orchestra-Research/AI-Research-SKILLs) and K-Dense `literature-review`. Routes: PI ideation and retrospectives, PI claim review and manuscript review, new student tasks `review` (systematic literature review) and `rigor` (six-dimension rigour review of a claim).
+
 ## 0.3.1 — 2026-10-16
 
 From the first automatic retrospective and a blocked run:

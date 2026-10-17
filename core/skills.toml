@@ -28,12 +28,12 @@ skills = ["research-lit", "hypothesis-generation"]
 [[route]]
 role = "pi"
 stage = "ideation"
-skills = ["idea-discovery", "idea-creator", "research-refine-pipeline", "research-refine", "hypothesis-generation"]
+skills = ["brainstorming-research-ideas", "idea-discovery", "idea-creator", "research-refine-pipeline", "research-refine", "hypothesis-generation"]
 
 [[route]]
 role = "student"
 task = "literature"
-skills = ["research-lit", "arxiv", "semantic-scholar", "openalex", "paper-lookup", "wiki-enrich"]
+skills = ["literature-review", "research-lit", "arxiv", "semantic-scholar", "openalex", "paper-lookup", "wiki-enrich"]
 required = ["research-lit"]
 
 [[route]]
@@ -75,7 +75,7 @@ required = ["formula-derivation"]
 [[route]]
 role = "pi"
 stage = "claim_review"
-skills = ["scientific-critical-thinking", "result-to-claim"]
+skills = ["ara-rigor-reviewer", "scientific-critical-thinking", "result-to-claim"]
 required = ["result-to-claim"]
 
 [[route]]
@@ -115,7 +115,7 @@ skills = ["humanizer"]
 [[route]]
 role = "reviewer"
 stage = "manuscript_review"
-skills = ["auto-review-loop", "paper-claim-audit", "citation-audit", "integrity-forensics", "kill-argument", "proof-checker"]
+skills = ["ara-rigor-reviewer", "auto-review-loop", "paper-claim-audit", "citation-audit", "integrity-forensics", "kill-argument", "proof-checker"]
 
 [[route]]
 role = "human"
@@ -131,7 +131,7 @@ skills = ["rebuttal"]
 [[route]]
 role = "pi"
 stage = "retrospective"
-skills = ["meta-optimize", "research-wiki"]
+skills = ["brainstorming-research-ideas", "meta-optimize", "research-wiki"]
 
 [[route]]
 role = "human"
@@ -144,3 +144,16 @@ role = "student"
 task = "debug"
 skills = ["systematic-debugging", "test-driven-development", "web-debug-search"]
 required = ["systematic-debugging"]
+
+# ── Systematic literature review and rigour review (student tasks) ─────────
+[[route]]
+role = "student"
+task = "review"
+skills = ["literature-review", "research-lit", "citation-management", "openalex", "semantic-scholar", "arxiv"]
+required = ["literature-review"]
+
+[[route]]
+role = "student"
+task = "rigor"
+skills = ["ara-rigor-reviewer", "scientific-critical-thinking", "result-to-claim"]
+required = ["ara-rigor-reviewer"]

@@ -7,12 +7,13 @@ The PI, the students and the reviewer all load skills from this one folder. It c
 | Source | Count | What for |
 |---|---|---|
 | ARIS — wanshuiyin/Auto-claude-code-research-in-sleep (MIT) | 45 + `shared-references/` | Choosing directions, experiments, claim review, writing, review-and-revise loops, self-improvement. Dependencies completed from ARIS's own `skill-groups.tsv` |
-| K-Dense-AI/scientific-agent-skills (MIT) | 12 | Literature databases, hypotheses, experimental design, statistics, units and uncertainty, compute discovery, citation management, sympy, peer review, scientific visualisation |
+| K-Dense-AI/scientific-agent-skills (MIT) | 13 | Systematic literature review, literature databases, hypotheses, experimental design, statistics, units and uncertainty, compute discovery, citation management, sympy, peer review, scientific visualisation |
 | vercel-labs/skills (MIT) | 1 | find-skills: search a registry when no skill fits a task |
 | anthropics/skills (Apache-2.0) | 1 | skill-creator: for writing local skills later |
 | blader/humanizer (MIT) | 1 | humanizer: removes machine-sounding prose |
 | research-paper-writing (MIT, see its LICENSE) | 1 | Paper-writing guidance |
 | obra/superpowers (MIT) | 4 | systematic-debugging, verification-before-completion, test-driven-development (students), dispatching-parallel-agents (PI) |
+| Orchestra-Research/AI-Research-SKILLs (MIT) | 2 | brainstorming-research-ideas (PI ideation after a failed direction or before a pivot), ara-rigor-reviewer (six-dimension rigour review of claims and drafts) |
 
 The skills are kept as upstream wrote them (a few ARIS files contain Chinese examples or a Chinese patent-format reference). Field-neutral additions go into `core/overlays/` and domain additions into `domains/<domain>/overlays/`; overlays are appended when a project mounts its skills, so the upstream files stay unchanged.
 

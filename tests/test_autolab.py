@@ -1062,6 +1062,14 @@ class Workflow(unittest.TestCase):
         self.assertEqual(dbg["model"], "haiku")
         with self.assertRaises(ValueError):
             tasks.new(self.cfg, "x", "analysis", extra_skills=["no-such-skill"])
+        rev = read_frontmatter(tasks.new(self.cfg, "Systematic review", "literature", task="review"))[0]
+        self.assertIn("literature-review", rev["skills"])
+        rig = read_frontmatter(tasks.new(self.cfg, "Rigour review of C001", "analysis", task="rigor",
+                                         difficulty="hard"))[0]
+        self.assertIn("ara-rigor-reviewer", rig["skills"])
+        from autolab import skills
+        self.assertIn("brainstorming-research-ideas", skills.resolve(self.cfg, "pi", "ideation"))
+        self.assertEqual(skills.check(self.cfg), [])
 
     def test_handoff_requires_invoked_skills(self):
         from autolab import tasks

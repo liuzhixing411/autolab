@@ -7,7 +7,7 @@ autolab runs a small "research lab" of AI agents that works on a scientific ques
 - **Reviewer** (a different model family, default OpenAI Codex CLI): independently checks whether evidence supports each claim, at a tier chosen by difficulty. Only claims that pass the PI *and* the reviewer become findings.
 - **You** steer through one folder (`00_human/`): goals, hard rules, what counts as valuable, uploads, ad-hoc instructions, pause/resume. The agents ask you for downloads and decisions in `00_human/ACTION_NEEDED.md`.
 
-Research methods come from mature open-source skill libraries (ARIS, K-Dense, obra/superpowers and others, 65 skills; see `THIRD_PARTY_NOTICES.md`). This repository adds the glue: project layout, gates, a SLURM backend, cost and compute caps, and a permission hook that keeps the agents inside their zones.
+Research methods come from mature open-source skill libraries (ARIS, K-Dense, obra/superpowers, Orchestra and others, 68 skills; see `THIRD_PARTY_NOTICES.md`). This repository adds the glue: project layout, gates, a SLURM backend, cost and compute caps, and a permission hook that keeps the agents inside their zones.
 
 > Status: v0.2, used for real multi-day runs on Purdue RCAC clusters (Negishi). Expect rough edges; read `CHANGELOG.md`.
 
