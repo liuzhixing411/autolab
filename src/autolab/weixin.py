@@ -82,13 +82,12 @@ class Client:
     def send(self, text, context, key):
         if not context:
             raise RuntimeError("Send a first message to the bot in Weixin to establish context")
-        result = self.call("sendmessage", {"msg": {
+        self.call("sendmessage", {"msg": {
             "from_user_id": "", "to_user_id": self.account["user_id"], "client_id": key,
             "message_type": 2, "message_state": 2, "context_token": context,
             "item_list": [{"type": 1, "text_item": {"text": text}}]}})
-        # Production iLink also acknowledges successful sends with message_id only.
-        if result.get("ret") != 0 and not result.get("message_id"):
-            raise RuntimeError("iLink did not confirm delivery")
+        # Match the official client: HTTP success with no nonzero business code is
+        # accepted. A replay can have an empty/omitted message_id or ret field.
 
 
 def login(cfg):
@@ -336,7 +335,8 @@ def run(cfg, action):
                 cycle(cfg, client)
             except (OSError, RuntimeError, ValueError, KeyError) as e:
                 # Never print response bodies, bearer tokens, or user message contents.
-                print(f"Weixin cycle failed ({type(e).__name__}); retrying in 30s. Re-login if session expired.", flush=True)
+                detail = str(e) if isinstance(e, RuntimeError) else type(e).__name__
+                print(f"Weixin cycle failed: {detail}; retrying in 30s. Re-login if session expired.", flush=True)
                 time.sleep(30)
             else:
                 time.sleep(1)

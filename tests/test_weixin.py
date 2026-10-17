@@ -213,5 +213,6 @@ class Weixin(unittest.TestCase):
         with patch.object(client, "call", return_value={"message_id": "123"}):
             client.send("hello", "context", "stable-id")
         with patch.object(client, "call", return_value={}):
-            with self.assertRaises(RuntimeError):
-                client.send("hello", "context", "stable-id")
+            client.send("hello", "context", "stable-id")
+        with patch.object(client, "call", return_value={"message_id": ""}):
+            client.send("hello", "context", "stable-id")
