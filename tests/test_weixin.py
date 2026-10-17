@@ -216,3 +216,14 @@ class Weixin(unittest.TestCase):
             client.send("hello", "context", "stable-id")
         with patch.object(client, "call", return_value={"message_id": ""}):
             client.send("hello", "context", "stable-id")
+
+    def test_context_rejection_waits_for_new_inbound(self):
+        human.request_action(self.cfg, "decision", "approve?", True)
+        self.client.messages = [self.message("状态")]
+        with patch.object(self.client, "send", side_effect=weixin.ILinkError(-2, True)) as send:
+            weixin.cycle(self.cfg, self.client)
+            weixin.cycle(self.cfg, self.client)
+            self.assertEqual(send.call_count, 1)
+            self.client.messages = [self.message("状态", "2")]
+            weixin.cycle(self.cfg, self.client)
+            self.assertEqual(send.call_count, 2)

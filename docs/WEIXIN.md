@@ -114,6 +114,10 @@ Only Tencent iLink HTTPS hosts are accepted; HTTP redirects never receive bearer
 An unfamiliar regional endpoint fails closed and requires review of the host allowlist.
 Delivery requires a valid session and context token; autonomous push after a long idle
 period is not guaranteed by the client protocol. Send `状态` to refresh context, or stop
+the listener and re-login when necessary. A `prepare failed`/`unknown error` send rejection
+keeps messages pending and suspends sends until a new authenticated inbound message;
+it is not treated as a successful delivery or retried continuously. HTTP acknowledgement
+does not prove the phone displayed a message. Stop
 the listener and run login again if the session expires. Stop the listener before
 re-binding; one listener owns a project. If a process crashes and leaves a lock, confirm
 it is dead before manually removing that specific lock directory.

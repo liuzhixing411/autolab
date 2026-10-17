@@ -23,6 +23,13 @@ BASE = "https://ilinkai.weixin.qq.com"
 VERSION = "2.4.8"  # protocol baseline, not the Autolab package version
 
 
+class ILinkError(RuntimeError):
+    def __init__(self, code, context_rejected=False):
+        self.context_rejected = context_rejected
+        super().__init__(f"iLink code={code}" + ("; send a fresh Weixin message to refresh context"
+                         if context_rejected else "; re-login if code is -14"))
+
+
 def directory(cfg):
     key = hashlib.sha256(str(cfg.layout.root.resolve()).encode()).hexdigest()[:20]
     return Path.home() / ".cache" / "autolab" / "weixin" / key
@@ -76,7 +83,8 @@ class Client:
             raise RuntimeError("Invalid iLink response")
         for key in ("ret", "errcode"):
             if result.get(key, 0) != 0:
-                raise RuntimeError(f"iLink {key}={result[key]} (session -14 requires re-login)")
+                reason = str(result.get("errmsg", "")).strip().lower()
+                raise ILinkError(result[key], result[key] == -2 and reason in ("prepare failed", "unknown error"))
         return result
 
     def send(self, text, context, key):
@@ -248,13 +256,16 @@ def cycle(cfg, client):
                 continue
             if msg.get("context_token"):
                 state["context"] = msg["context_token"]
+                mid = str(msg.get("message_id") or "")
+                if mid and digest([msg.get("from_user_id"), mid]) not in state.get("received", {}):
+                    state.pop("blocked_context", None)
             receive(cfg, state, msg)
         if batch.get("get_updates_buf"):
             state["cursor"] = batch["get_updates_buf"]
         state["initialized"] = True
         write_json(d / "state.json", state)
     # Never hold the state lock during network operations (runner also uses it).
-    if not state.get("context"):
+    if not state.get("context") or state.get("blocked_context") == state["context"]:
         return
     outgoing = []
     for key, e in state["events"].items():
@@ -272,8 +283,18 @@ def cycle(cfg, client):
     for bucket, key, text in outgoing[:5]:
         chunks = [text[i:i + 1000] for i in range(0, len(text), 1000)]
         for i, chunk in enumerate(chunks):
-            client.send(f"({i + 1}/{len(chunks)}) {chunk}" if len(chunks) > 1 else chunk,
-                        state["context"], digest([bucket, key, i]))
+            try:
+                client.send(f"({i + 1}/{len(chunks)}) {chunk}" if len(chunks) > 1 else chunk,
+                            state["context"], digest([bucket, key, i]))
+            except ILinkError as e:
+                if not e.context_rejected:
+                    raise
+                with FileLock(d / "state"):
+                    current = read_json(d / "state.json", {})
+                    current["blocked_context"] = state["context"]
+                    write_json(d / "state.json", current)
+                print("Weixin rejected send context/parameters; pending messages retained. Send a fresh message to retry.", flush=True)
+                return
         with FileLock(d / "state"):
             current = read_json(d / "state.json", {})
             current[bucket][key]["sent"] = True
