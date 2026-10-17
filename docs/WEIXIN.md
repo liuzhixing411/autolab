@@ -51,7 +51,7 @@ Send `状态` to the bot from your bound Weixin account to establish the reply c
 Then detach tmux with Ctrl+B, D, and run the normal research runner in its own session:
 
 ```bash
-bash /path/to/autolab/scripts/run_pi.sh /path/to/project --interval 60
+bash /path/to/autolab/scripts/run_pi.sh /path/to/project --interval 900
 ```
 
 Restart an existing PI runner after upgrading so it imports queued replies. No binding
@@ -113,12 +113,25 @@ exactly-once guarantee is assumed. Replies themselves are imported idempotently.
 Only Tencent iLink HTTPS hosts are accepted; HTTP redirects never receive bearer tokens.
 An unfamiliar regional endpoint fails closed and requires review of the host allowlist.
 Delivery requires a valid session and context token; autonomous push after a long idle
-period is not guaranteed by the client protocol. Send `状态` to refresh context, or stop
-the listener and re-login when necessary. A `prepare failed`/`unknown error` send rejection
-keeps messages pending and suspends sends until a new authenticated inbound message;
-it is not treated as a successful delivery or retried continuously. HTTP acknowledgement
-does not prove the phone displayed a message. Stop
-the listener and run login again if the session expires. Stop the listener before
+period is not guaranteed by the client protocol. A `prepare failed`/`unknown error`
+rejection keeps the individual message pending with automatic exponential backoff
+(60 seconds up to one hour). No new `状态` message is required to resume attempts.
+Other due notifications can still be attempted; acknowledged chunks are checkpointed.
+A fresh authenticated inbound message makes pending items eligible immediately.
+HTTP acknowledgement (`sent` in the internal queue) means gateway acceptance only,
+not proof that the phone displayed the message. There is no delivery receipt API here.
+
+**This channel alone is not a guaranteed unattended alert channel.** Upstream reports
+[309](https://github.com/Tencent/openclaw-weixin/issues/309) and
+[286](https://github.com/Tencent/openclaw-weixin/issues/286) describe context-dependent
+send windows; their durations differ and are not a documented service contract.
+The published protocol provides no explicit context renewal endpoint. Automatic
+retry repairs transient failures but cannot extend a server-expired context. For
+important unattended alerts, configure a separately authorized push service or
+channel that supports proactive delivery; this bridge does not silently forward
+research data to a third party. Keep Weixin for authenticated decision replies.
+
+Stop the listener and run login again if the session expires. Stop the listener before
 re-binding; one listener owns a project. If a process crashes and leaves a lock, confirm
 it is dead before manually removing that specific lock directory.
 

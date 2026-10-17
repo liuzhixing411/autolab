@@ -103,7 +103,7 @@ class Weixin(unittest.TestCase):
         human.request_action(self.cfg, "approval", "approve", True)
         self.client.messages = [self.message("hello")]
         self.client.fail_send = True
-        with self.assertRaises(RuntimeError):
+        with patch.object(weixin.time, "time", return_value=1000):
             weixin.cycle(self.cfg, self.client)
         self.assertFalse(next(iter(read_json(self.d / "state.json")["events"].values()))["sent"])
         self.client.fail_send = False
@@ -217,13 +217,55 @@ class Weixin(unittest.TestCase):
         with patch.object(client, "call", return_value={"message_id": ""}):
             client.send("hello", "context", "stable-id")
 
-    def test_context_rejection_waits_for_new_inbound(self):
+    def test_context_rejection_retries_without_new_inbound(self):
         human.request_action(self.cfg, "decision", "approve?", True)
         self.client.messages = [self.message("状态")]
-        with patch.object(self.client, "send", side_effect=weixin.ILinkError(-2, True)) as send:
+        with patch.object(weixin.time, "time", return_value=1000):
+            with patch.object(self.client, "send", side_effect=weixin.ILinkError(-2, True)) as send:
+                weixin.cycle(self.cfg, self.client)
+                first = send.call_count
+                weixin.cycle(self.cfg, self.client)
+                self.assertEqual(send.call_count, first)
+        with patch.object(weixin.time, "time", return_value=1061):
             weixin.cycle(self.cfg, self.client)
+        self.assertTrue(all(e["sent"] for e in read_json(self.d / "state.json")["events"].values()))
+
+    def test_failed_card_does_not_block_new_progress(self):
+        self.request()
+        human.notify(self.cfg, "bad item")
+        human.notify(self.cfg, "important progress")
+        send = self.client.send
+        def selective(text, context, key):
+            if "bad item" in text:
+                raise weixin.ILinkError(-2, True)
+            return send(text, context, key)
+        with patch.object(self.client, "send", side_effect=selective):
             weixin.cycle(self.cfg, self.client)
-            self.assertEqual(send.call_count, 1)
-            self.client.messages = [self.message("状态", "2")]
+        self.assertTrue(any("important progress" in t for t, _, _ in self.client.sent))
+
+    def test_partial_card_resumes_after_restart_without_replaying_chunks(self):
+        self.request()
+        human.request_action(self.cfg, "decision", "x" * 2500, True)
+        send = self.client.send
+        def fail_second(text, context, key):
+            if text.startswith("(2/"):
+                raise weixin.ILinkError(-2, True)
+            return send(text, context, key)
+        with patch.object(weixin.time, "time", return_value=1000):
+            with patch.object(self.client, "send", side_effect=fail_second):
+                weixin.cycle(self.cfg, self.client)
+        self.client.sent.clear()
+        with patch.object(weixin.time, "time", return_value=1061):
             weixin.cycle(self.cfg, self.client)
-            self.assertEqual(send.call_count, 2)
+        self.assertFalse(any(t.startswith("(1/") for t, _, _ in self.client.sent))
+        self.assertTrue(any(t.startswith("(2/") for t, _, _ in self.client.sent))
+
+    def test_migrate_permanent_block_and_notify_new_action_without_prompt(self):
+        self.request()
+        state = read_json(self.d / "state.json")
+        state["blocked_context"] = "context"
+        write_json(self.d / "state.json", state)
+        aid = human.request_action(self.cfg, "decision", "new automatic request", True)
+        self.client.sent.clear()
+        weixin.cycle(self.cfg, self.client)
+        self.assertTrue(any(aid in t for t, _, _ in self.client.sent))

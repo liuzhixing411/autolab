@@ -26,7 +26,8 @@ VERSION = "2.4.8"  # protocol baseline, not the Autolab package version
 class ILinkError(RuntimeError):
     def __init__(self, code, context_rejected=False):
         self.context_rejected = context_rejected
-        super().__init__(f"iLink code={code}" + ("; send a fresh Weixin message to refresh context"
+        self.code = code
+        super().__init__(f"iLink code={code}" + ("; upstream rejected message preparation"
                          if context_rejected else "; re-login if code is -14"))
 
 
@@ -209,6 +210,7 @@ def receive(cfg, state, msg):
         for e in state.get("events", {}).values():
             if e.get("kind") == "action" and e.get("aid") in actions(cfg):
                 e["sent"] = False
+                e.pop("next_chunk", None)
     elif text.startswith(("留言 ", "note ")) and text.split(maxsplit=1)[-1].strip():
         state.setdefault("replies", {})[key] = {
             "aid": "NOTE", "version": None, "body": text.split(maxsplit=1)[1],
@@ -258,14 +260,21 @@ def cycle(cfg, client):
                 state["context"] = msg["context_token"]
                 mid = str(msg.get("message_id") or "")
                 if mid and digest([msg.get("from_user_id"), mid]) not in state.get("received", {}):
-                    state.pop("blocked_context", None)
+                    state["last_inbound_at"] = now_iso()
+                    for bucket in ("events", "received"):
+                        for pending in state.get(bucket, {}).values():
+                            pending.pop("retry_at", None)
+                            pending.pop("failures", None)
             receive(cfg, state, msg)
         if batch.get("get_updates_buf"):
             state["cursor"] = batch["get_updates_buf"]
         state["initialized"] = True
+        # Migrate the former permanent latch. A transient -2 must never require
+        # another human message just to resume automatic attempts.
+        state.pop("blocked_context", None)
         write_json(d / "state.json", state)
     # Never hold the state lock during network operations (runner also uses it).
-    if not state.get("context") or state.get("blocked_context") == state["context"]:
+    if not state.get("context"):
         return
     outgoing = []
     for key, e in state["events"].items():
@@ -280,25 +289,47 @@ def cycle(cfg, client):
         outgoing.append(("events", key, text))
     outgoing = [("received", k, e["text"]) for k, e in state.get("received", {}).items()
                 if not e["sent"]] + outgoing
+    outgoing = [(b, k, t) for b, k, t in outgoing
+                if state[b][k].get("retry_at", 0) <= time.time()]
+    # Old rejected messages must not monopolize the first five positions.
+    outgoing.sort(key=lambda item: state[item[0]][item[1]].get("last_attempt", 0))
     for bucket, key, text in outgoing[:5]:
         chunks = [text[i:i + 1000] for i in range(0, len(text), 1000)]
-        for i, chunk in enumerate(chunks):
+        # Persist each acknowledged chunk so a later failure does not replay the
+        # entire card. Scope checkpoints to the rendered text (codes can renew).
+        payload = digest(text)
+        entry = state[bucket][key]
+        start = entry.get("next_chunk", 0) if entry.get("payload") == payload else 0
+        for i in range(start, len(chunks)):
+            chunk = chunks[i]
             try:
                 client.send(f"({i + 1}/{len(chunks)}) {chunk}" if len(chunks) > 1 else chunk,
-                            state["context"], digest([bucket, key, i]))
-            except ILinkError as e:
-                if not e.context_rejected:
-                    raise
+                            state["context"], digest([bucket, key, payload, i]))
+            except (RuntimeError, OSError) as e:
                 with FileLock(d / "state"):
                     current = read_json(d / "state.json", {})
-                    current["blocked_context"] = state["context"]
+                    pending = current[bucket][key]
+                    failures = pending.get("failures", 0) + 1
+                    delay = min(3600, 60 * 2 ** min(failures - 1, 6))
+                    pending.update(failures=failures, retry_at=time.time() + delay,
+                                   last_attempt=time.time(),
+                                   last_error=f"iLink code={e.code}" if isinstance(e, ILinkError)
+                                   else "transport failure")
                     write_json(d / "state.json", current)
-                print("Weixin rejected send context/parameters; pending messages retained. Send a fresh message to retry.", flush=True)
-                return
-        with FileLock(d / "state"):
-            current = read_json(d / "state.json", {})
-            current[bucket][key]["sent"] = True
-            write_json(d / "state.json", current)
+                print(f"Weixin send failed ({pending['last_error']}); pending item retries in {delay}s.", flush=True)
+                break
+            with FileLock(d / "state"):
+                current = read_json(d / "state.json", {})
+                current[bucket][key].update(payload=payload, next_chunk=i + 1,
+                                          last_attempt=time.time())
+                write_json(d / "state.json", current)
+        else:
+            with FileLock(d / "state"):
+                current = read_json(d / "state.json", {})
+                current[bucket][key].update(sent=True, accepted_at=now_iso())
+                for field in ("retry_at", "failures", "last_error"):
+                    current[bucket][key].pop(field, None)
+                write_json(d / "state.json", current)
 
 
 def apply_replies(cfg):
