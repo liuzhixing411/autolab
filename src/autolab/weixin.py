@@ -191,7 +191,59 @@ def events(cfg):
             text = (f"{p.parent.name}: " + str(rec.get("statement", "")) if kind == "finding" else
                     f"{p.parent.name}: {rec.get('hypothesis')}; {rec.get('value')}; {rec.get('reason', '')}")
             result[key] = {"kind": kind, "text": text, "created": time.time()}
+    copies = read_json(cfg.layout.state / "notification_copy.json", {})
+    for key, event in result.items():
+        if key in copies:
+            event["copy"] = copies[key]
     return result
+
+
+def summarize(cfg, target, summary, background):
+    """PI-authored display copy, bound to an immutable source event/version."""
+    for label, value, limit in (("summary", summary, 100), ("background", background, 360)):
+        if not value or len(value) > limit or '\n' in value or not re.search(r"[\u4e00-\u9fff]", value):
+            raise ValueError(f"{label} must be one Chinese line, at most {limit} characters")
+    source = events(cfg)
+    keys = [key for key, event in source.items() if key == target or event.get("aid") == target]
+    if len(keys) != 1:
+        raise ValueError("Choose one current event key or open action ID")
+    path = cfg.layout.state / "notification_copy.json"
+    with FileLock(path):
+        copies = read_json(path, {})
+        copies[keys[0]] = {"summary": summary, "background": background}
+        write_json(path, copies)
+
+
+def render_event(cfg, e):
+    """Never dump an English research record into a phone notification."""
+    action = e["kind"] == "action"
+    informative = action and "[other]" in e["text"] and "[optional]" in e["text"]
+    copy = e.get("copy")
+    if copy:
+        summary, background = copy["summary"], copy["background"]
+    else:
+        body = re.sub(r"^.*?\[(?:download|decision|data|approval|other)\]\s*", "", e["text"]) if action else e["text"]
+        body = re.sub(r"\s*_\(added .*?\)_$", "", body).replace('**', '').strip()
+        # New PI messages use the same structured Chinese source convention.
+        first, sep, rest = body.partition("背景：")
+        if re.search(r"[\u4e00-\u9fff]", first) and len(first) <= 100:
+            summary = first.removeprefix("要做：").removeprefix("进展：").strip(' ；;')
+            background = rest[:360] if sep else "完整证据保留在项目记录中。"
+        else:
+            refs = "、".join(dict.fromkeys(re.findall(r"\b(?:A|E|F|C|L)\d+\b", body)))[:100]
+            summary = "有一项研究进展待整理，请查看项目记录。" if not action or informative else "请查看原始事项并决定下一步。"
+            background = f"{refs or '该事项'}的中文说明尚待 PI 补充；请勿仅凭这条提示批准操作。"
+    label = "进展" if not action or informative else "待你决定"
+    ident = e.get("aid", "")
+    text = f"【{label}{' ' + ident if ident else ''}】\n{summary}\n背景：{background}"
+    if action and not informative:
+        if copy or not background.endswith("请勿仅凭这条提示批准操作。"):
+            text += f"\n回复：回复 {e['aid']} {e['token']} 你的决定"
+            if verdict_claim(e["text"]):
+                text += "\n等级裁定请写：评级 A/B/C/D（选择一个）。"
+    else:
+        text += "\n无需回复；有建议可发送“留言 你的建议”。"
+    return text
 
 
 def receive(cfg, state, msg):
@@ -255,6 +307,9 @@ def cycle(cfg, client):
             if key not in existing:
                 event.update(token=secrets.token_hex(4), sent=first and event["kind"] != "action")
                 existing[key] = event
+            if event.get("copy") != existing[key].get("copy"):
+                existing[key]["copy"] = event.get("copy")
+                existing[key]["sent"] = False
             elif event["kind"] == "action" and time.time() - existing[key]["created"] > 7 * 86400:
                 existing[key].update(token=secrets.token_hex(4), created=time.time(), sent=False)
         for msg in batch.get("msgs", []):
@@ -284,12 +339,7 @@ def cycle(cfg, client):
     for key, e in state["events"].items():
         if e.get("sent") or key not in discovered:
             continue
-        if e["kind"] == "action":
-            text = f"【Autolab 待拍板 · {cfg.layout.root.name}】\n{e['text']}\n回复格式：回复 {e['aid']} {e['token']} 你的决定"
-            if verdict_claim(e["text"]):
-                text += f"\n等级裁定可回复：回复 {e['aid']} {e['token']} 评级 A（或 B/C/D）"
-        else:
-            text = f"【Autolab 进展 · {cfg.layout.root.name} · {e['kind']}】\n{e['text'][:1800]}\n实验 outcome 不等于最终 finding。"
+        text = render_event(cfg, e)
         outgoing.append(("events", key, text))
     outgoing += [("received", k, e["text"]) for k, e in state.get("received", {}).items()
                  if not e["sent"]]
@@ -299,7 +349,9 @@ def cycle(cfg, client):
         return
     def priority(item):
         b, k, _ = item
-        return 0 if b == "events" and state[b][k]["kind"] == "action" else (1 if b == "received" else 2)
+        event = state[b][k]
+        is_decision = b == "events" and event["kind"] == "action" and not ("[optional]" in event["text"] and "[other]" in event["text"])
+        return 0 if is_decision else (1 if b == "received" else 2)
     outgoing.sort(key=lambda item: (priority(item), state[item[0]][item[1]].get("last_attempt", 0)))
     if not outgoing:
         return
@@ -312,17 +364,13 @@ def cycle(cfg, client):
     for b, k, text in outgoing:
         if priority((b, k, text)) != rank:
             continue
-        if rank == 2:
-            event = state[b][k]
-            body = event['text']
-            text = f"[{event['kind']}] {body[:300]}" + ("…（摘要，完整内容见项目记录）" if len(body) > 300 else "")
         if parts and len("\n\n".join(parts + [text])) > MESSAGE_LIMIT - 120:
             break
         members.append([b, k])
         parts.append(text)
     text = "\n\n".join(parts)
     if rank == 2:
-        text = f"【Autolab 进展摘要 · {cfg.layout.root.name} · {len(members)} 项】\n" + text + "\n实验 outcome 不等于最终 finding。"
+        text = f"【科研进展 · {len(members)} 项】\n" + text + "\n实验结果不等于已确认的研究结论。"
     key = digest([members, text])
     bucket = "deliveries"
     with FileLock(d / "state"):

@@ -152,6 +152,7 @@ def run(cfg: Config) -> dict:
     actions = human.open_actions(cfg)
     if actions:
         L += [f"## Open requests to the human: {len(actions)} (see 00_human/ACTION_NEEDED.md)", ""]
+    L += ["## Human notification copy", "Use `autolab human summaries` and fill missing concise Chinese copy with `autolab human summarize <key-or-A-id> --summary ... --background ...`. One sentence for the decision/progress, then necessary evidence, options and caveats. Do not send long English records.", ""]
     path = cfg.layout.digests / f"TICK-{counter:04d}.md"
     write_atomic(path, "\n".join(L) + "\n")
     return {"tick": counter, "digest": str(path), "ready": human.is_ready(cfg),

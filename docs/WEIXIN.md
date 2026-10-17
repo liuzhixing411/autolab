@@ -9,6 +9,21 @@ regional routing and real delivery must be verified with your own account.
 
 ## What is sent
 
+Phone notifications use concise Chinese: one sentence stating the decision/action
+or progress, then `背景：` with necessary evidence and qualifications. The existing
+PI produces the copy during its normal turn; the package listener formats and sends
+it on the cluster without this desktop chat or an additional model agent.
+
+Use `autolab human summaries` to list source events needing copy, then
+`autolab human summarize A029 --summary "请决定是否开始撰写报告。" --background "说明证据、选项、成本与限制。"`.
+An exact event key also works for findings/outcomes/PI updates. Copy is bound to the
+source version; changing a request invalidates its old copy. Keep summaries below
+100 characters and background below 360. New `human notify` messages can directly
+use `进展：中文一句话。背景：必要背景。`. Unknown English records produce a short Chinese
+notice pointing to the original record, not an invented translation or approval.
+PI must fill missing copy each turn. Existing pending records can be summarized
+without changing their original evidence or granting approval.
+
 - Open `00_human/ACTION_NEEDED.md` requests, including decisions, approvals, downloads
   and missing data. A changed request/config/plan produces a new confirmation code.
 - New accepted findings and valid experimental outcomes that support or refute a
@@ -20,8 +35,9 @@ all open requests. Start it before the research runner. Routine ticks and runnin
 polls do not generate messages. The listener must remain running for delivery.
 
 Notifications are packed by priority: open decisions first, reply receipts second,
-then a progress digest. Each decision keeps its full text and its own reply code.
-Progress entries use explicit summaries of up to 300 characters; full records stay
+then a progress digest. Each decision keeps its own reply code; its original full
+text remains in ACTION_NEEDED.md while the phone shows the concise Chinese copy.
+Progress entries use concise Chinese summaries and background; full records stay
 in the project. A digest is at most one group every 30 minutes. Any notification
 uses at most one message per minute, with up to 2800 characters per chunk. Long
 decisions resume across cycles, and are marked sent only after all chunks succeed.

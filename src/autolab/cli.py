@@ -87,6 +87,12 @@ def cmd_human(a):
         _out(human.scan_uploads(cfg))
     elif a.action == "notify":
         human.notify(cfg, a.text)
+    elif a.action in ("summaries", "summarize"):
+        from autolab import weixin
+        if a.action == "summaries":
+            _out([{ "key": k, "source": e["text"] } for k, e in weixin.events(cfg).items() if not e.get("copy")])
+        else:
+            weixin.summarize(cfg, a.text, a.summary, a.background)
 
 
 def cmd_lit(a):
@@ -353,7 +359,9 @@ def build_parser() -> argparse.ArgumentParser:
     s.set_defaults(fn=cmd_skills)
 
     s = sub.add_parser("human")
-    s.add_argument("action", choices=["check", "ack", "request", "uploads", "notify"])
+    s.add_argument("action", choices=["check", "ack", "request", "uploads", "notify", "summaries", "summarize"])
+    s.add_argument("--summary", default="", help="one Chinese sentence, at most 100 characters")
+    s.add_argument("--background", default="", help="Chinese context and qualifications, at most 360 characters")
     s.add_argument("text", nargs="?", default="")
     s.add_argument("--kind", default="other", choices=["download", "decision", "data", "approval", "other"])
     s.add_argument("--blocking", action="store_true")

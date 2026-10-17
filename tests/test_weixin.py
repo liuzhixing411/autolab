@@ -6,6 +6,7 @@ from unittest.mock import patch
 from test_autolab import make_project, write
 from autolab import guard, hooks, human, project, weixin
 from autolab.util import read_json, write_json
+REAL_RENDER = weixin.render_event
 
 
 class FakeClient:
@@ -36,6 +37,11 @@ class Weixin(unittest.TestCase):
         p.start()
         self.addCleanup(p.stop)
         self.client = FakeClient()
+        # Transport/approval tests exercise arbitrary long payloads independently
+        # of the concise Chinese display layer; dedicated tests below use it.
+        p = patch.object(weixin, "render_event", side_effect=lambda cfg, e: e["text"] + " " + e.get("token", ""))
+        p.start()
+        self.addCleanup(p.stop)
         for name, value in (("SEND_INTERVAL", 0), ("PROGRESS_INTERVAL", 0), ("MESSAGE_LIMIT", 1000)):
             p = patch.object(weixin, name, value)
             p.start()
@@ -312,3 +318,37 @@ class Weixin(unittest.TestCase):
         with patch.object(weixin.time, "time", return_value=2801):
             weixin.cycle(self.cfg, self.client)
             self.assertIn("milestone two", self.client.sent[-1][0])
+
+    def test_chinese_copy_bound_to_action_and_preserves_reply(self):
+        aid = human.request_action(self.cfg, "decision", "Approve pilot or stop? Cost 4-11 core-h", True)
+        weixin.summarize(self.cfg, aid, "请决定先做试跑还是停止。", "试跑预计需要 4–11 核时，费用尚未实测。")
+        with patch.object(weixin, "render_event", REAL_RENDER):
+            self.client.messages = [self.message("状态")]
+            weixin.cycle(self.cfg, self.client)
+        text = self.client.sent[0][0]
+        self.assertIn("请决定先做试跑还是停止", text)
+        self.assertIn("背景：", text)
+        self.assertNotIn("Approve pilot", text)
+        event = next(e for e in read_json(self.d / "state.json")["events"].values() if e.get("aid") == aid)
+        self.assertIn(f"回复 {aid} {event['token']}", text)
+        write(self.cfg.layout.experiments / "E001/plan.md", "changed")
+        current = next(e for e in weixin.events(self.cfg).values() if e.get("aid") == aid)
+        self.assertNotIn("copy", current)
+
+    def test_chinese_progress_and_unknown_english_fallback(self):
+        human.notify(self.cfg, "进展：完成小规模验证。背景：误差为零，但尚未测试真实数据。")
+        event = next(iter(weixin.events(self.cfg).values()))
+        text = REAL_RENDER(self.cfg, event)
+        self.assertIn("完成小规模验证", text)
+        self.assertIn("尚未测试真实数据", text)
+        self.assertIn("无需回复", text)
+        event["text"] = "An unreviewed result with an unsupported interpretation " * 100
+        text = REAL_RENDER(self.cfg, event)
+        self.assertNotIn("unsupported", text)
+        self.assertIn("中文说明尚待", text)
+
+    def test_copy_validation(self):
+        aid = human.request_action(self.cfg, "decision", "test", True)
+        for summary in ("English only", "中" * 101, "第一行\n第二行"):
+            with self.assertRaises(ValueError):
+                weixin.summarize(self.cfg, aid, summary, "必要背景。")
