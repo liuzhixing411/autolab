@@ -376,6 +376,7 @@ def cycle(cfg, client):
     with FileLock(d / "state"):
         current = read_json(d / "state.json", {})
         entry = current.setdefault(bucket, {}).setdefault(key, {"sent": False})
+        entry.setdefault("members", members)
         state[bucket] = current[bucket]
         write_json(d / "state.json", current)
     for bucket, key, text in [(bucket, key, text)]:
@@ -470,6 +471,8 @@ def run(cfg, action):
         return login(cfg)
     if action == "apply":
         print(f"Imported {apply_replies(cfg)} Weixin replies")
+        from autolab.events import sync
+        sync(cfg)
         return
     d = directory(cfg)
     account = read_json(d / "account.json")
@@ -481,6 +484,8 @@ def run(cfg, action):
         while True:
             try:
                 cycle(cfg, client)
+                from autolab.events import sync
+                sync(cfg)
             except (OSError, RuntimeError, ValueError, KeyError) as e:
                 # Never print response bodies, bearer tokens, or user message contents.
                 detail = str(e) if isinstance(e, RuntimeError) else type(e).__name__

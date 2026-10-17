@@ -520,6 +520,9 @@ def main(argv: list[str] | None = None) -> int:
         before = guard.protected(cfg) if cfg else {}
         try:
             rc = args.fn(args)
+            if cfg:
+                from autolab.events import sync
+                sync(cfg)
         finally:
             if cfg:
                 guard.authorize_changes(cfg, before)
