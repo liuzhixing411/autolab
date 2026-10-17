@@ -7,6 +7,7 @@ import json
 import os
 import shutil
 import stat
+import subprocess
 import sys
 import tempfile
 import time
@@ -604,6 +605,7 @@ class Slurm(unittest.TestCase):
     def test_parts_run_side_by_side(self):
         # seen in turn 7: part B of E003b could not be submitted while part A was running
         passing_plan(self.cfg)
+        write(self.cfg.layout.experiments / "E001" / "run.py", "print(1)\n")
         plan = self.cfg.layout.experiments / "E001" / "plan.md"
         plan.write_text(plan.read_text(encoding="utf-8").replace(
             "+++\n\n## Prior", '\n[parts.A]\nrun_command = "python run.py --suite A --out results/A"\n'
@@ -662,6 +664,61 @@ class Slurm(unittest.TestCase):
         self.assertEqual(slurm.job_state("77"), "TIMEOUT")
         plan.write_text(plan.read_text(encoding="utf-8").replace('array = "0-9%4"', 'array = "x-y"'), encoding="utf-8")
         self.assertIn("array", " ".join(slurm.resources(self.cfg, "E001")["problems"]))
+
+    def test_resources_override_after_lock(self):
+        passing_plan(self.cfg)
+        exp = self.cfg.layout.experiments / "E001"
+        plan = exp / "plan.md"
+        plan.write_text(plan.read_text(encoding="utf-8").replace(
+            "+++\n\n## Prior", '\n[parts.D]\nrun_command = "echo replay"\n[parts.D.resources]\nmem_gb = 32\n'
+            "+++\n\n## Prior"), encoding="utf-8")
+        self.assertIn("mem_reason", " ".join(slurm.resources(self.cfg, "E001", "D")["problems"]))
+        write(exp / "jobs.jsonl", "{}\n")                                       # plan now locked for agents
+        self.assertFalse(hooks.decide({"tool_name": "Edit", "tool_input": {"file_path": "experiments/E001/plan.md"}},
+                                      self.root)[0])
+        ovf = write(exp / "resources_override.toml", '[parts.D.resources]\nmem_gb = 8\n')
+        self.assertIn("reason", " ".join(slurm.resources(self.cfg, "E001", "D")["problems"]))
+        ovf.write_text('reason = "peak 0.36 GB measured in pilot P"\n[parts.D.resources]\nmem_gb = 8\n', encoding="utf-8")
+        r = slurm.resources(self.cfg, "E001", "D")
+        self.assertEqual((r["mem_gb"], r["problems"]), (8, []))
+        self.assertIn("pilot P", r["override"])
+        self.assertEqual(slurm.resources(self.cfg, "E001")["mem_gb"], 8)       # other parts unchanged
+        ovf.write_text('reason = "x"\n[parts.D.resources]\nrun_command = "rm -rf /"\n', encoding="utf-8")
+        self.assertIn("resources only", " ".join(slurm.resources(self.cfg, "E001", "D")["problems"]))
+
+    def test_missing_script_and_idle_cpu_warning(self):
+        passing_plan(self.cfg)
+        plan = self.cfg.layout.experiments / "E001" / "plan.md"
+        r = slurm.resources(self.cfg, "E001")
+        self.assertIn("warning_cpus", r)                                       # 4 cpus for `echo run`
+        plan.write_text(plan.read_text(encoding="utf-8").replace('run_command = "echo run"',
+                        'run_command = "python -I run_x.py --seed $SLURM_ARRAY_TASK_ID"\n'
+                        'analysis_command = "python analysis/verdicts.py"'), encoding="utf-8")
+        probs = " ".join(slurm.resources(self.cfg, "E001")["problems"])
+        self.assertIn("run_x.py", probs)
+        self.assertIn("analysis/verdicts.py", probs)
+        write(self.cfg.layout.experiments / "E001" / "run_x.py", "print(1)\n")
+        write(self.cfg.layout.experiments / "E001" / "analysis" / "verdicts.py", "print(1)\n")
+        self.assertEqual(slurm.resources(self.cfg, "E001")["problems"], [])
+        plan.write_text(plan.read_text(encoding="utf-8").replace("cpus = 4", 'cpus = 4\ncpus_reason = "3 cores kept idle for timing isolation"'),
+                        encoding="utf-8")
+        self.assertNotIn("warning_cpus", slurm.resources(self.cfg, "E001"))
+        plan.write_text(plan.read_text(encoding="utf-8").replace('cpus_reason = "3 cores kept idle for timing isolation"', "")
+                        .replace("python -I run_x.py", "srun python -I run_x.py"), encoding="utf-8")
+        self.assertNotIn("warning_cpus", slurm.resources(self.cfg, "E001"))
+
+    def test_uncommitted_code_lists_files_not_outputs(self):
+        if shutil.which("git") is None:
+            self.skipTest("git not available")
+        run = lambda *a: subprocess.run(["git", "-C", str(self.root), *a], capture_output=True, text=True)
+        run("init", "-q")
+        run("-c", "user.email=t@t", "-c", "user.name=t", "add", "-A")
+        run("-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "base")
+        e = self.cfg.layout.experiments / "E001"
+        write(e / "run.py", "print(1)\n")
+        write(e / "results" / "metrics.json", "{}\n")
+        write(e / "pilot" / "frames.csv", "a\n")
+        self.assertEqual(slurm.uncommitted_code(self.root, ["experiments/E001", "src"]), ["experiments/E001/run.py"])
 
     def test_usage_recorded_after_finish(self):
         passing_plan(self.cfg)

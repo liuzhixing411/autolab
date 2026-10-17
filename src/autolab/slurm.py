@@ -9,6 +9,7 @@ Site specifics (paths, conda activation, partitions) come from sites/<site>.toml
 from __future__ import annotations
 
 import math
+import re
 import os
 import shutil
 import subprocess
@@ -21,6 +22,14 @@ from autolab.util import append_jsonl, now_iso, read_frontmatter, read_jsonl, wr
 
 TERMINAL = {"COMPLETED", "FAILED", "CANCELLED", "TIMEOUT", "OUT_OF_MEMORY", "NODE_FAIL",
             "PREEMPTED", "BOOT_FAIL", "DEADLINE"}
+RESOURCE_KEYS = {"partition", "qos", "cpus", "mem_gb", "hours", "gpus", "nodes", "ntasks", "array",
+                 "mem_reason", "cpus_reason"}
+# commands that use more than one core; a multi-core request without one of these (or a
+# `cpus_reason`) gets a warning: jobs in the first long run used 3-11 % of their cores
+_PARALLEL_HINT = re.compile(r"\b(srun|mpirun|mpiexec|OMP_NUM_THREADS|NUMBA_NUM_THREADS)\b|--threads|--workers|"
+                            r"(?<!\S)-j\s*\d|(?<!\S)-np?\s+\d")
+# script files a command runs (no shell variables or globs in the name)
+_SCRIPT = re.compile(r"(?<![\w$*/.-])((?:[\w.-]+/)*[\w.-]+\.(?:py|sh|c|cpp|f90|jl|R))(?![\w/])")
 
 
 def _exe(name: str) -> str:
@@ -40,7 +49,8 @@ def resources(cfg: Config, eid: str, part: str | None = None) -> dict:
         [parts.B.resources]
         hours = 2
     Each part is submitted and tracked on its own (one unfinished job per part)."""
-    meta, _ = read_frontmatter(cfg.layout.experiments / eid / "plan.md")
+    exp = cfg.layout.experiments / eid
+    meta, _ = read_frontmatter(exp / "plan.md")
     res = dict(meta.get("resources", {}))
     command = meta.get("run_command", "")
     if part:
@@ -49,6 +59,30 @@ def resources(cfg: Config, eid: str, part: str | None = None) -> dict:
             raise ValueError(f"{eid}: plan.md has no [parts.{part}] (known: {sorted(parts_def)})")
         res.update(parts_def[part].get("resources", {}))
         command = parts_def[part].get("run_command", "")
+    # Resources may change after the plan is locked (the science may not): resources_override.toml
+    # with a `reason` and [resources] / [parts.<p>.resources] tables. Seen: a replay part asked for
+    # 32 GB, failed validation, and the locked plan blocked it for hours.
+    override_problems: list[str] = []
+    override_reason = ""
+    ovf = exp / "resources_override.toml"
+    if ovf.is_file():
+        import tomllib
+        try:
+            ov = tomllib.loads(ovf.read_text(encoding="utf-8"))
+        except tomllib.TOMLDecodeError as e:
+            ov = {}
+            override_problems.append(f"resources_override.toml is not valid TOML: {e}")
+        override_reason = str(ov.get("reason", "")).strip()
+        layer = dict(ov.get("resources", {}))
+        if part:
+            layer.update(ov.get("parts", {}).get(part, {}).get("resources", {}))
+        bad = sorted(k for k in layer if k not in RESOURCE_KEYS)
+        if bad:
+            override_problems.append(f"resources_override.toml may change resources only, not {bad}")
+        elif layer and not override_reason:
+            override_problems.append("resources_override.toml needs a `reason`")
+        else:
+            res.update(layer)
     s = cfg["slurm"]
     out = {"partition": res.get("partition", s["partition"]),
            "qos": res.get("qos", s["qos"]),
@@ -60,7 +94,9 @@ def resources(cfg: Config, eid: str, part: str | None = None) -> dict:
            "array": str(res.get("array", "")).strip(),
            "command": command, "part": part}
     out["total_cpus"] = out["ntasks"] * out["cpus"]
-    problems = []
+    problems = list(override_problems)
+    if override_reason:
+        out["override"] = override_reason
     out["array_size"] = 1
     if out["array"]:
         try:
@@ -105,6 +141,18 @@ def resources(cfg: Config, eid: str, part: str | None = None) -> dict:
             problems.append(out["warning"] + "; lower mem_gb or give the reason in [resources] mem_reason")
     if s["max_cpus"] and out["billed_cpus"] > s["max_cpus"]:
         problems.append(f"memory request is billed as {out['billed_cpus']} cores, above max_cpus={s['max_cpus']}")
+    # scripts the command runs must exist (a plan named an analysis script nobody had written)
+    for script in _SCRIPT.findall(command) + _SCRIPT.findall(str(meta.get("analysis_command", ""))):
+        if not ((exp / script).is_file() or (cfg.layout.root / script).is_file()):
+            problems.append(f"script '{script}' named in the plan does not exist (write and commit it first)")
+    if out["total_cpus"] > 1 and not _PARALLEL_HINT.search(command) and not str(res.get("cpus_reason", "")).strip():
+        out["warning_cpus"] = (f"{out['total_cpus']} cpus requested but the command shows no parallel launcher or "
+                               "thread setting; request 1 cpu, or state why in [resources] cpus_reason "
+                               "(e.g. reserved cores for timing isolation)")
+        effs = [u["cpu_efficiency"] for u in read_jsonl(exp / "jobs_usage.jsonl")
+                if u.get("cpu_efficiency") is not None and u.get("part") == part]
+        if effs:
+            out["warning_cpus"] += f"; earlier jobs of this part used {max(effs):.0%} of their cores at most"
     out["problems"] = problems
     return out
 
@@ -179,22 +227,39 @@ def validate(cfg: Config, eid: str, part: str | None = None) -> dict:
     out = {"ok": proc.returncode == 0, "script": str(path), "billed_cpus": r["billed_cpus"],
            "core_hours_max": round(r["billed_cpus"] * r["hours"] * r["array_size"], 1),
            "output": (proc.stdout + proc.stderr).strip()}
-    if r.get("warning"):
-        out["warning"] = r["warning"]
+    for k in ("warning", "warning_cpus", "override"):
+        if r.get(k):
+            out[k] = r[k]
     return out
 
 
-def _git_clean(root: Path, paths: list[str] | None = None) -> bool | None:
-    """True if the given paths have no uncommitted changes. Only code that the job runs is
-    checked; state/, logs and results change every turn and must not block submission."""
+
+_OUTPUT_DIRS = {"results", "logs", "slurm", "run", "pilot", "out", "output", "__pycache__", "analysis_out"}
+_CODE_EXT = {".py", ".sh", ".c", ".h", ".cpp", ".hpp", ".cu", ".f90", ".f", ".jl", ".r", ".toml", ".yaml", ".yml",
+             ".mk", ".cfg", ".ini"}
+
+
+def uncommitted_code(root: Path, paths: list[str]) -> list[str] | None:
+    """Code/config files under `paths` that are modified or untracked (outputs ignored), or None
+    when the project is not a git repository."""
     if not (root / ".git").exists() or shutil.which("git") is None:
         return None
-    existing = [p for p in (paths or []) if (root / p).exists()]
-    if paths is not None and not existing:
-        return True
-    out = subprocess.run(["git", "-C", str(root), "status", "--porcelain", "--", *existing],
-                         capture_output=True, text=True)
-    return out.returncode == 0 and not out.stdout.strip()
+    existing = [p for p in paths if (root / p).exists()]
+    if not existing:
+        return []
+    proc = subprocess.run(["git", "-C", str(root), "status", "--porcelain", "--untracked-files=all", "--", *existing],
+                          capture_output=True, text=True)
+    out = []
+    for line in proc.stdout.splitlines():
+        f = line[3:].strip().strip('"').split(" -> ")[-1]
+        p = Path(f)
+        if set(p.parts) & _OUTPUT_DIRS:
+            continue
+        name = p.name.lower()
+        if (p.suffix.lower() in _CODE_EXT or name in ("makefile", "plan.md")
+                or (p.suffix.lower() == ".json" and "config" in f.lower())):
+            out.append(f)
+    return out
 
 
 def clean_paths(cfg: Config, eid: str) -> list[str]:
@@ -217,9 +282,13 @@ def submit(cfg: Config, eid: str, part: str | None = None) -> dict:
         raise RuntimeError(f"{what} already has unfinished job(s) {busy}; wait, or cancel with "
                            f"`autolab slurm cancel {eid}` before resubmitting. Runs that write separate "
                            "outputs can be declared as [parts.<name>] in plan.md and submitted with --part")
-    if cfg["slurm"]["require_clean_git"] and _git_clean(cfg.layout.root, clean_paths(cfg, eid)) is False:
-        raise RuntimeError(f"uncommitted changes in {clean_paths(cfg, eid)}; commit first so the job "
-                           "runs committed code")
+    dirty = uncommitted_code(cfg.layout.root, clean_paths(cfg, eid)) if cfg["slurm"]["require_clean_git"] else None
+    if dirty:
+        shown = " ".join(dirty[:12]) + (" ..." if len(dirty) > 12 else "")
+        raise RuntimeError(f"uncommitted code or config files: {shown}. The job must run committed code: the agent "
+                           f"that wrote them commits them from the project root (`git add {shown} && git commit -m "
+                           f"\"{eid}: <what changed>\"`), then submits again. Results, logs and pilot outputs are "
+                           "not checked.")
     path, r = render(cfg, eid, part)
     cap = float(cfg["slurm"].get("total_core_hours") or 0)
     if cap:
@@ -235,9 +304,12 @@ def submit(cfg: Config, eid: str, part: str | None = None) -> dict:
     rec = {"job": job, "eid": eid, "part": part, "submitted": now_iso(), "script": str(path),
            "resources": {k: r[k] for k in ("partition", "qos", "nodes", "ntasks", "cpus", "total_cpus", "billed_cpus",
                                            "mem_gb", "hours", "gpus", "array", "array_size")}}
+    if r.get("override"):
+        rec["override"] = r["override"]
     append_jsonl(cfg.layout.experiments / eid / "jobs.jsonl", rec)
-    if r.get("warning"):
-        rec = {**rec, "warning": r["warning"]}
+    for k in ("warning", "warning_cpus"):
+        if r.get(k):
+            rec = {**rec, k: r[k]}
     return rec
 
 

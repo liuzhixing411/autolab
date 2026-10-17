@@ -81,8 +81,7 @@ DEFAULTS: dict[str, Any] = {
         "require_clean_git": True,
         "total_core_hours": 0,             # cap for all jobs of the project (0 = no cap)
         # what must be committed before a job runs ({eid} = experiment id)
-        "clean_paths": ["experiments/{eid}/code", "experiments/{eid}/configs",
-                        "experiments/{eid}/plan.md", "src"],
+        "clean_paths": ["experiments/{eid}", "src"],   # code and configs in these must be committed; results, logs and pilot outputs are not checked
     },
 }
 

@@ -7,6 +7,7 @@ prediction = "<<FILL: expected value/range of the primary metric, with confidenc
 decision_rule = "<<FILL: if X then next do A; if Y then B; if invalid then C>>"
 budget_hours = 0.0
 run_command = "<<FILL: command run inside experiments/<E>/ by the job script>>"
+# analysis_command = "python analysis/analyze.py"   # recommended: write and commit the analysis before the data exist
 wandb = false
 
 [resources]

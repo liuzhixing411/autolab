@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.3.1 — 2026-10-16
+
+From the first automatic retrospective and a blocked run:
+- **Resource overrides after the plan lock**: `experiments/<E>/resources_override.toml` (`reason` plus `[resources]` / `[parts.<p>.resources]`, resource keys only). A replay part had been blocked for hours because its locked plan asked for too much memory.
+- **Clearer commit check**: submit lists the uncommitted code and config files (outputs ignored) and says who commits them and how; the default checked paths are the experiment folder and `src/`.
+- **Scripts must exist**: scripts named in `run_command` or `analysis_command` must exist before a job is submitted (a plan had named an analysis script nobody wrote).
+- **Idle-core warning**: requesting several cpus for a command without a parallel launcher or thread setting warns at validate/submit (earlier jobs used 3-11 % of their cores); `cpus_reason` documents deliberate reservations.
+
 ## 0.3.0 — 2026-10-16
 
 - **Skills are actually used.** In a 32-turn run the Skill tool was never called: students had no Skill tool and only a menu of names. Students now have the tool; routes in `core/skills.toml` have `required` skills; `autolab task new` puts them in the task card; the handoff and plan gates verify invocations in the turn logs; the tick digest reports skill use.
