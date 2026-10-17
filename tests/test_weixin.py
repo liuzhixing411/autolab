@@ -36,6 +36,10 @@ class Weixin(unittest.TestCase):
         p.start()
         self.addCleanup(p.stop)
         self.client = FakeClient()
+        for name, value in (("SEND_INTERVAL", 0), ("PROGRESS_INTERVAL", 0), ("MESSAGE_LIMIT", 1000)):
+            p = patch.object(weixin, name, value)
+            p.start()
+            self.addCleanup(p.stop)
 
     def message(self, text, mid="1", sender="owner"):
         return {"message_id": mid, "from_user_id": sender, "message_type": 1,
@@ -47,6 +51,7 @@ class Weixin(unittest.TestCase):
         weixin.cycle(self.cfg, self.client)
         state = read_json(self.d / "state.json")
         event = next(e for e in state["events"].values() if e.get("aid") == aid)
+        weixin.cycle(self.cfg, self.client)  # drain the status acknowledgement
         return aid, event
 
     def reply(self, aid, event, mid="2"):
@@ -108,6 +113,7 @@ class Weixin(unittest.TestCase):
         self.assertFalse(next(iter(read_json(self.d / "state.json")["events"].values()))["sent"])
         self.client.fail_send = False
         weixin.cycle(self.cfg, self.client)
+        weixin.cycle(self.cfg, self.client)
         count = len(self.client.sent)
         weixin.cycle(self.cfg, self.client)
         self.assertEqual(len(self.client.sent), count)
@@ -167,6 +173,7 @@ class Weixin(unittest.TestCase):
         self.assertEqual(len(human.open_actions(self.cfg)), 1)  # note doesn't approve requests
         human.notify(self.cfg, "F002 的证据在 experiments/E002/results.csv")
         weixin.cycle(self.cfg, self.client)
+        weixin.cycle(self.cfg, self.client)
         self.assertTrue(any("results.csv" in text for text, _, _ in self.client.sent))
 
     def test_explicit_grade_creates_fingerprint_bound_verdict(self):
@@ -198,6 +205,8 @@ class Weixin(unittest.TestCase):
         human.request_action(self.cfg, "decision", "x" * 2500 + "important final condition", True)
         self.client.messages = [self.message("状态")]
         weixin.cycle(self.cfg, self.client)
+        for _ in range(4):
+            weixin.cycle(self.cfg, self.client)
         self.assertIn("important final condition", "".join(t for t, _, _ in self.client.sent))
 
     def test_client_checks_business_errors(self):
@@ -230,21 +239,21 @@ class Weixin(unittest.TestCase):
             weixin.cycle(self.cfg, self.client)
         self.assertTrue(all(e["sent"] for e in read_json(self.d / "state.json")["events"].values()))
 
-    def test_failed_card_does_not_block_new_progress(self):
+    def test_progress_is_combined(self):
         self.request()
         human.notify(self.cfg, "bad item")
         human.notify(self.cfg, "important progress")
-        send = self.client.send
-        def selective(text, context, key):
-            if "bad item" in text:
-                raise weixin.ILinkError(-2, True)
-            return send(text, context, key)
-        with patch.object(self.client, "send", side_effect=selective):
-            weixin.cycle(self.cfg, self.client)
-        self.assertTrue(any("important progress" in t for t, _, _ in self.client.sent))
+        self.client.sent.clear()
+        weixin.cycle(self.cfg, self.client)
+        self.assertEqual(len(self.client.sent), 1)
+        self.assertIn("bad item", self.client.sent[0][0])
+        self.assertIn("important progress", self.client.sent[0][0])
 
     def test_partial_card_resumes_after_restart_without_replaying_chunks(self):
         self.request()
+        state = read_json(self.d / "state.json")
+        state.pop("next_send_at", None)
+        write_json(self.d / "state.json", state)
         human.request_action(self.cfg, "decision", "x" * 2500, True)
         send = self.client.send
         def fail_second(text, context, key):
@@ -269,3 +278,37 @@ class Weixin(unittest.TestCase):
         self.client.sent.clear()
         weixin.cycle(self.cfg, self.client)
         self.assertTrue(any(aid in t for t, _, _ in self.client.sent))
+
+    def test_decisions_precede_and_combine_before_progress(self):
+        self.request()
+        human.notify(self.cfg, "milestone")
+        one = human.request_action(self.cfg, "decision", "first decision", True)
+        two = human.request_action(self.cfg, "decision", "second decision", True)
+        self.client.sent.clear()
+        weixin.cycle(self.cfg, self.client)
+        self.assertEqual(len(self.client.sent), 1)
+        self.assertIn(one, self.client.sent[0][0])
+        self.assertIn(two, self.client.sent[0][0])
+        self.assertNotIn("milestone", self.client.sent[0][0])
+        weixin.cycle(self.cfg, self.client)
+        self.assertIn("milestone", self.client.sent[-1][0])
+
+    def test_progress_window_does_not_delay_decision(self):
+        with patch.object(weixin.time, "time", return_value=1000):
+            self.request()
+            with patch.object(weixin, "SEND_INTERVAL", 60), patch.object(weixin, "PROGRESS_INTERVAL", 1800):
+                human.notify(self.cfg, "milestone one")
+                weixin.cycle(self.cfg, self.client)
+                count = len(self.client.sent)
+                human.notify(self.cfg, "milestone two")
+                weixin.cycle(self.cfg, self.client)
+                self.assertEqual(len(self.client.sent), count)
+        with patch.object(weixin.time, "time", return_value=1061):
+            aid = human.request_action(self.cfg, "decision", "urgent", True)
+            weixin.cycle(self.cfg, self.client)
+            self.assertIn(aid, self.client.sent[-1][0])
+            weixin.cycle(self.cfg, self.client)
+            self.assertFalse(any("milestone two" in t for t, _, _ in self.client.sent))
+        with patch.object(weixin.time, "time", return_value=2801):
+            weixin.cycle(self.cfg, self.client)
+            self.assertIn("milestone two", self.client.sent[-1][0])

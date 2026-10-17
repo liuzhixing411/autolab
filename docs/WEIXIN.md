@@ -19,6 +19,16 @@ The first listener cycle silently baselines old findings/outcomes/PI updates, bu
 all open requests. Start it before the research runner. Routine ticks and running-job
 polls do not generate messages. The listener must remain running for delivery.
 
+Notifications are packed by priority: open decisions first, reply receipts second,
+then a progress digest. Each decision keeps its full text and its own reply code.
+Progress entries use explicit summaries of up to 300 characters; full records stay
+in the project. A digest is at most one group every 30 minutes. Any notification
+uses at most one message per minute, with up to 2800 characters per chunk. Long
+decisions resume across cycles, and are marked sent only after all chunks succeed.
+New decisions do not wait for the progress digest window. Queued items that do not
+fit remain pending. This reduces consumption of observed per-conversation send
+allowances; it cannot replenish an allowance enforced by Weixin.
+
 ## Linux server or cluster setup
 
 Use the same OS account, home directory and absolute project path for the listener and
@@ -116,7 +126,9 @@ Delivery requires a valid session and context token; autonomous push after a lon
 period is not guaranteed by the client protocol. A `prepare failed`/`unknown error`
 rejection keeps the individual message pending with automatic exponential backoff
 (60 seconds up to one hour). No new `状态` message is required to resume attempts.
-Other due notifications can still be attempted; acknowledged chunks are checkpointed.
+The failed group and all original items remain pending; acknowledged chunks are checkpointed.
+Failed sends impose a global backoff to avoid spending requests on the same rejected
+conversation. Other eligible groups are reconsidered after the backoff.
 A fresh authenticated inbound message makes pending items eligible immediately.
 HTTP acknowledgement (`sent` in the internal queue) means gateway acceptance only,
 not proof that the phone displayed the message. There is no delivery receipt API here.

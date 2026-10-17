@@ -21,6 +21,9 @@ from autolab.util import FileLock, now_iso, read_json, read_jsonl, sha256_file, 
 
 BASE = "https://ilinkai.weixin.qq.com"
 VERSION = "2.4.8"  # protocol baseline, not the Autolab package version
+MESSAGE_LIMIT = 2800
+SEND_INTERVAL = 60
+PROGRESS_INTERVAL = 1800
 
 
 class ILinkError(RuntimeError):
@@ -205,6 +208,7 @@ def receive(cfg, state, msg):
         return
     answer = "用法：回复 A编号 校验码 你的决定；留言 你的问题或建议；状态。回复会在下一轮交给 PI，不会直接执行命令。"
     if text in ("状态", "status"):
+        state["deliveries"] = {}
         answer = f"Autolab {cfg.layout.root.name}: {len(actions(cfg))} 项待回复；STOP={human.stopped(cfg)}。"
         # Explicit status request also resends outstanding decision cards.
         for e in state.get("events", {}).values():
@@ -287,20 +291,53 @@ def cycle(cfg, client):
         else:
             text = f"【Autolab 进展 · {cfg.layout.root.name} · {e['kind']}】\n{e['text'][:1800]}\n实验 outcome 不等于最终 finding。"
         outgoing.append(("events", key, text))
-    outgoing = [("received", k, e["text"]) for k, e in state.get("received", {}).items()
-                if not e["sent"]] + outgoing
+    outgoing += [("received", k, e["text"]) for k, e in state.get("received", {}).items()
+                 if not e["sent"]]
     outgoing = [(b, k, t) for b, k, t in outgoing
                 if state[b][k].get("retry_at", 0) <= time.time()]
-    # Old rejected messages must not monopolize the first five positions.
-    outgoing.sort(key=lambda item: state[item[0]][item[1]].get("last_attempt", 0))
-    for bucket, key, text in outgoing[:5]:
-        chunks = [text[i:i + 1000] for i in range(0, len(text), 1000)]
+    if time.time() < state.get("next_send_at", 0):
+        return
+    def priority(item):
+        b, k, _ = item
+        return 0 if b == "events" and state[b][k]["kind"] == "action" else (1 if b == "received" else 2)
+    outgoing.sort(key=lambda item: (priority(item), state[item[0]][item[1]].get("last_attempt", 0)))
+    if not outgoing:
+        return
+    rank = priority(outgoing[0])
+    if rank == 2 and time.time() < state.get("next_progress_at", 0):
+        return
+    # Pack one priority class per delivery. Decisions retain their complete text
+    # and individual approval codes; progress is explicitly a summary.
+    members, parts = [], []
+    for b, k, text in outgoing:
+        if priority((b, k, text)) != rank:
+            continue
+        if rank == 2:
+            event = state[b][k]
+            body = event['text']
+            text = f"[{event['kind']}] {body[:300]}" + ("…（摘要，完整内容见项目记录）" if len(body) > 300 else "")
+        if parts and len("\n\n".join(parts + [text])) > MESSAGE_LIMIT - 120:
+            break
+        members.append([b, k])
+        parts.append(text)
+    text = "\n\n".join(parts)
+    if rank == 2:
+        text = f"【Autolab 进展摘要 · {cfg.layout.root.name} · {len(members)} 项】\n" + text + "\n实验 outcome 不等于最终 finding。"
+    key = digest([members, text])
+    bucket = "deliveries"
+    with FileLock(d / "state"):
+        current = read_json(d / "state.json", {})
+        entry = current.setdefault(bucket, {}).setdefault(key, {"sent": False})
+        state[bucket] = current[bucket]
+        write_json(d / "state.json", current)
+    for bucket, key, text in [(bucket, key, text)]:
+        chunks = [text[i:i + MESSAGE_LIMIT] for i in range(0, len(text), MESSAGE_LIMIT)]
         # Persist each acknowledged chunk so a later failure does not replay the
         # entire card. Scope checkpoints to the rendered text (codes can renew).
         payload = digest(text)
         entry = state[bucket][key]
         start = entry.get("next_chunk", 0) if entry.get("payload") == payload else 0
-        for i in range(start, len(chunks)):
+        for i in range(start, min(start + 1, len(chunks))):
             chunk = chunks[i]
             try:
                 client.send(f"({i + 1}/{len(chunks)}) {chunk}" if len(chunks) > 1 else chunk,
@@ -315,6 +352,9 @@ def cycle(cfg, client):
                                    last_attempt=time.time(),
                                    last_error=f"iLink code={e.code}" if isinstance(e, ILinkError)
                                    else "transport failure")
+                    current["next_send_at"] = time.time() + delay
+                    for b, k in members:
+                        current[b][k].update(retry_at=time.time() + delay, last_attempt=time.time())
                     write_json(d / "state.json", current)
                 print(f"Weixin send failed ({pending['last_error']}); pending item retries in {delay}s.", flush=True)
                 break
@@ -322,13 +362,21 @@ def cycle(cfg, client):
                 current = read_json(d / "state.json", {})
                 current[bucket][key].update(payload=payload, next_chunk=i + 1,
                                           last_attempt=time.time())
+                current["next_send_at"] = time.time() + SEND_INTERVAL
                 write_json(d / "state.json", current)
         else:
+            if start + 1 < len(chunks):
+                return
             with FileLock(d / "state"):
                 current = read_json(d / "state.json", {})
                 current[bucket][key].update(sent=True, accepted_at=now_iso())
                 for field in ("retry_at", "failures", "last_error"):
                     current[bucket][key].pop(field, None)
+                for b, k in members:
+                    current[b][k].update(sent=True, accepted_at=now_iso())
+                    current[b][k].pop("retry_at", None)
+                if rank == 2:
+                    current["next_progress_at"] = time.time() + PROGRESS_INTERVAL
                 write_json(d / "state.json", current)
 
 
