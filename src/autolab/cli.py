@@ -222,7 +222,61 @@ def cmd_decide(a):
 
 def cmd_lesson(a):
     from autolab import tasks
-    print(tasks.add_lesson(_cfg(a), a.text, a.origin, (a.keywords or "").split(",")))
+    cfg = _cfg(a)
+    if a.action == "add":
+        when = {}
+        for w in a.when or []:
+            k, sep, v = w.partition("=")
+            if not sep:
+                raise ValueError(f"--when needs key=value, got '{w}'")
+            when[k] = v
+        print(tasks.add_lesson(cfg, a.text, a.origin or "", (a.keywords or "").split(","), when,
+                               a.evidence or [], a.confidence, a.recheck or ""))
+    elif a.action == "list":
+        for l in tasks.lessons(cfg, include_retired=a.all):
+            print(f"{l['id']}{' (retired)' if l['retired'] else ''}: {tasks.lesson_label(l)}")
+    else:                                        # support | counter | retire
+        tasks.lesson_event(cfg, a.text, a.action, a.origin or "", a.why or "", a.set_confidence)
+        print(f"{a.text}: {a.action} recorded")
+
+
+def cmd_candidate(a):
+    from autolab import research
+    cfg = _cfg(a)
+    if a.action == "new":
+        fields = {k: getattr(a, k) or "" for k in research.CARD_FIELDS if k != "statement"}
+        print(research.new_candidate(cfg, a.id, a.statement or "", **fields))
+    elif a.action == "check":
+        probs = research.card_problems(cfg, a.id)
+        _out({"ok": not probs, "problems": probs})
+        return 0 if not probs else 1
+    elif a.action == "set":
+        research.set_candidate(cfg, a.id, a.status, a.why or "")
+        print(f"{a.id} -> {a.status}")
+    else:
+        for c in research.list_candidates(cfg):
+            print(f"{c['id']} [{c['status']}{', priority ' + c['priority'] if c['priority'] else ''}] "
+                  f"{c['statement'][:90]} | test: {c['discriminating_experiment'][:70]} | cost: {c['cost_estimate']}")
+
+
+def cmd_outcome(a):
+    from autolab import research
+    rec = research.record_outcome(_cfg(a), a.eid, a.engineering, a.hypothesis, a.value, a.why,
+                                  [e for e in (a.evidence or "").split(",") if e.strip()], a.usd)
+    _out(rec)
+
+
+def cmd_tree(a):
+    from autolab import research
+    print(research.tree(_cfg(a)), end="")
+
+
+def cmd_report(a):
+    from autolab import report
+    m = report.write(_cfg(a))
+    print(report.render(m) if not a.json else "", end="")
+    if a.json:
+        _out(m)
 
 
 def cmd_guard(a):
@@ -375,12 +429,48 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--by", default="PI")
     s.set_defaults(fn=cmd_decide)
 
-    s = sub.add_parser("lesson", help="record a rule learned in a retrospective (surfaces in context packs)")
-    s.add_argument("action", choices=["add"])
-    s.add_argument("text")
-    s.add_argument("--origin", required=True, help="what happened that taught this")
+    s = sub.add_parser("lesson", help="scoped lessons: add | list | support/counter/retire <LS-id> (surface in context packs)")
+    s.add_argument("action", choices=["add", "list", "support", "counter", "retire"])
+    s.add_argument("text", nargs="?", default="", help="add: the lesson; support/counter/retire: the LS-id")
+    s.add_argument("--origin", help="add: source (E012, C004, F003 or RETRO-40); support/counter: the experiment")
+    s.add_argument("--when", action="append", help="add: condition key=value (domain, data, resolution, resources, "
+                                                    "method, regime); repeat for several")
+    s.add_argument("--evidence", action="append", help="add: file or folder it rests on (fingerprinted)")
+    s.add_argument("--confidence", default="low", choices=["low", "medium", "high"])
+    s.add_argument("--set-confidence", choices=["low", "medium", "high"], help="support/counter: new confidence")
+    s.add_argument("--recheck", help="add: which change of conditions would make it doubtful")
+    s.add_argument("--why", help="support/counter/retire: reason")
     s.add_argument("--keywords", default="")
+    s.add_argument("--all", action="store_true", help="list: include retired lessons")
     s.set_defaults(fn=cmd_lesson)
+
+    from autolab.research import CARD_FIELDS, ENGINEERING, HYPOTHESIS, STATUS, VALUE
+    s = sub.add_parser("candidate", help="candidate hypotheses: new | list | check | set (state/candidates/<H>.md)")
+    s.add_argument("action", choices=["new", "list", "check", "set"])
+    s.add_argument("id", nargs="?", help="hypothesis id, e.g. H14")
+    for k in CARD_FIELDS:
+        s.add_argument(f"--{k.replace('_', '-')}", dest=k)
+    s.add_argument("--status", choices=list(STATUS))
+    s.add_argument("--why")
+    s.set_defaults(fn=cmd_candidate)
+
+    s = sub.add_parser("outcome", help="close an experiment: engineering / hypothesis / value (pivot, stop -> human)")
+    s.add_argument("eid")
+    s.add_argument("--engineering", required=True, choices=list(ENGINEERING))
+    s.add_argument("--hypothesis", required=True, choices=list(HYPOTHESIS))
+    s.add_argument("--value", required=True, choices=list(VALUE))
+    s.add_argument("--why", required=True)
+    s.add_argument("--evidence", help="comma-separated files")
+    s.add_argument("--usd", type=float, help="API cost attributable to this experiment, if known")
+    s.set_defaults(fn=cmd_outcome)
+
+    sub.add_parser("tree", help="write state/TREE.md: experiments as a search tree with outcomes").set_defaults(fn=cmd_tree)
+
+    s = sub.add_parser("report", help="metrics: send-back rate, valid tests, repeated failures, memory use, "
+                                      "human corrections, cost per credible result (state/METRICS.md)")
+    s.add_argument("what", choices=["metrics"])
+    s.add_argument("--json", action="store_true")
+    s.set_defaults(fn=cmd_report)
 
     s = sub.add_parser("guard", help="runner support: snapshot protected files before a turn, check them after")
     s.add_argument("action", choices=["snapshot", "check"])

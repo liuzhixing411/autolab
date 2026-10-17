@@ -127,9 +127,28 @@ def run(cfg: Config) -> dict:
         L += [f"## Retrospective due (last at tick {retro_last or 'never'})",
               f"Dispatch one student (analysis, sonnet) to write `experience/RETRO-{counter}.md` from state/DECISIONS.md, "
               "rejected claims, escalations, blocked tasks and handoff anomalies since then: what went wrong or slow, "
-              "the root cause, and a rule that would have prevented it. Add each rule with "
-              "`autolab lesson add \"<rule>\" --origin \"<what happened>\" --keywords k1,k2`; context packs then "
-              "surface it before related work. Framework problems go to the human in ACTION_NEEDED.", ""]
+              "the root cause, and a rule that would have prevented it. Add each rule with its scope: "
+              "`autolab lesson add \"<rule>\" --origin <E-id|RETRO-n> --when data=... --when resolution=... "
+              "--evidence <file> --confidence low|medium|high --recheck \"<when it may stop holding>\" --keywords k1,k2`; "
+              "record new supporting or contradicting experiments with `autolab lesson support|counter <LS-id>`. "
+              "Also read `autolab report metrics` (state/METRICS.md). Framework problems go to the human in ACTION_NEEDED.", ""]
+    from autolab import research
+    try:
+        no_outcome = research.missing_outcomes(cfg)
+        research.tree(cfg)                       # keep state/TREE.md current
+    except (OSError, ValueError):
+        no_outcome = []
+    if no_outcome:
+        L += [f"## Finished experiments without an outcome: {', '.join(no_outcome)}",
+              "Close each: `autolab outcome <E> --engineering valid|invalid --hypothesis supports|refutes|inconclusive|n/a "
+              "--value continue|refine|pivot|stop --why \"...\" --evidence <files>`. An invalid run (environment, bug, "
+              "timeout) is rerun or fixed, never counted against the direction. pivot/stop go to the human. "
+              "New plans are blocked until this is done.", ""]
+    cands = research.list_candidates(cfg)
+    if cands:
+        L += ["## Candidates (state/candidates/; ranking is advice, not evidence)"]
+        L += [f"- {c['id']} [{c['status']}] {c['statement'][:80]}" for c in cands if c["status"] in ("open", "selected")]
+        L.append("")
     actions = human.open_actions(cfg)
     if actions:
         L += [f"## Open requests to the human: {len(actions)} (see 00_human/ACTION_NEEDED.md)", ""]

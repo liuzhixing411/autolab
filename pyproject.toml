@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "autolab"
-version = "0.4.0"
+version = "0.5.0"
 description = "Autonomous research loop: PI / student / reviewer agents on ARIS + K-Dense skills, with field packs"
 requires-python = ">=3.11"
 license = {text = "MIT"}

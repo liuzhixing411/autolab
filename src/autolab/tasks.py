@@ -117,14 +117,85 @@ def decide(cfg: Config, text: str, why: str, evidence: str = "", track: str = ""
     return did
 
 
-def add_lesson(cfg: Config, lesson: str, origin: str, keywords: list[str]) -> str:
-    """A rule learned in a retrospective; context packs then surface it before related work."""
-    from autolab.util import append_jsonl, next_id
+LESSON_SCOPE = ("domain", "data", "resolution", "resources", "method", "regime")
+CONFIDENCE = ("low", "medium", "high")
+
+
+def add_lesson(cfg: Config, lesson: str, origin: str, keywords: list[str], when: dict[str, str] | None = None,
+               evidence: list[str] | None = None, confidence: str = "low", recheck: str = "") -> str:
+    """A rule learned from an experiment or a retrospective, with the conditions under which it was
+    observed. Context packs surface it before related work together with its scope and confidence,
+    so "X does not help" learned at 256^3 on synthetic data is not applied to a real 3D case.
+    Unscoped lessons used to read as universal rules."""
+    from autolab.util import append_jsonl, next_id, sha256_tree
+    when = {k.strip(): v.strip() for k, v in (when or {}).items() if v.strip()}
+    if not when:
+        raise ValueError(f"give the conditions it was learned under: --when key=value (keys {', '.join(LESSON_SCOPE)})")
+    bad = [k for k in when if k not in LESSON_SCOPE]
+    if bad:
+        raise ValueError(f"unknown condition keys {bad}; use {LESSON_SCOPE}")
+    if confidence not in CONFIDENCE:
+        raise ValueError(f"confidence must be one of {CONFIDENCE}")
+    if not re.match(r"(E\d+|RETRO-\d+|C\d+|F\d+)", origin.strip()):
+        raise ValueError("origin must name the source: an experiment (E012), claim/finding or RETRO-<tick>")
+    if not recheck.strip():
+        raise ValueError("say when to recheck it (--recheck): which change of conditions would make it doubtful")
+    fps = {}
+    for e in evidence or []:
+        p = cfg.layout.root / e
+        if not p.exists():
+            raise FileNotFoundError(f"evidence {e} not found")
+        fps[e] = sha256_tree(p)
     lid = next_id(cfg.layout.ids, "lesson")
     append_jsonl(cfg.layout.experience / "lessons.jsonl",
-                 {"id": lid, "lesson": lesson.strip(), "origin": origin.strip(),
+                 {"id": lid, "lesson": lesson.strip(), "origin": origin.strip(), "when": when,
+                  "evidence": fps, "confidence": confidence, "recheck": recheck.strip(),
                   "keywords": [k.strip() for k in keywords if k.strip()], "at": now_iso()})
     return lid
+
+
+def lesson_event(cfg: Config, lid: str, kind: str, source: str, why: str, confidence: str | None = None) -> None:
+    """Record a supporting or contradicting example (or retire the lesson). Events are appended;
+    `lessons()` folds them, so the history stays visible."""
+    from autolab.util import append_jsonl
+    if kind not in ("support", "counter", "retire"):
+        raise ValueError("kind must be support, counter or retire")
+    if lid not in {l["id"] for l in lessons(cfg)}:
+        raise KeyError(f"no lesson {lid}")
+    if confidence and confidence not in CONFIDENCE:
+        raise ValueError(f"confidence must be one of {CONFIDENCE}")
+    if not why.strip():
+        raise ValueError("give the reason")
+    append_jsonl(cfg.layout.experience / "lessons.jsonl",
+                 {"event": kind, "lesson_id": lid, "source": source.strip(), "why": why.strip(),
+                  "confidence": confidence, "at": now_iso()})
+
+
+def lessons(cfg: Config, include_retired: bool = False) -> list[dict]:
+    from autolab.util import read_jsonl
+    out: dict[str, dict] = {}
+    for r in read_jsonl(cfg.layout.experience / "lessons.jsonl"):
+        if "event" not in r:
+            out[r["id"]] = {**r, "support": [], "counter": [], "retired": False,
+                            "when": r.get("when", {}), "confidence": r.get("confidence", "unscoped")}
+            continue
+        l = out.get(r.get("lesson_id", ""))
+        if not l:
+            continue
+        if r["event"] == "retire":
+            l["retired"] = True
+        else:
+            l[r["event"]].append(f"{r['source']}: {r['why']}")
+        if r.get("confidence"):
+            l["confidence"] = r["confidence"]
+    return [l for l in out.values() if include_retired or not l["retired"]]
+
+
+def lesson_label(l: dict) -> str:
+    scope = ", ".join(f"{k}={v}" for k, v in l.get("when", {}).items()) or "UNSCOPED (conditions unknown)"
+    tail = f" [confidence {l.get('confidence')}; {len(l['support'])} support, {len(l['counter'])} counter"
+    tail += f"; recheck if {l['recheck']}]" if l.get("recheck") else "]"
+    return f"{l['lesson'][:110]} — only under: {scope}{tail}"
 
 
 def retro_due(cfg: Config, tick: int) -> int | None:

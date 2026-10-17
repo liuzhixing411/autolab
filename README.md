@@ -148,6 +148,7 @@ Stop the loop with `tmux kill-session -t autolab-loop` (on the same login node),
 | Pause everything | `touch 00_human/STOP` (delete to resume) |
 | Let the PI decide while you are away | Create `00_human/DELEGATED` (TOML): `until = "2026-10-17T08:00:00-04:00"` and `to = "pi"`. Until then, the "ask me first" decisions are made by the PI and logged in ACTION_NEEDED for your review |
 | See cost and compute | `autolab budget status`, `autolab slurm status`, `autolab slurm usage` |
+| See the search and how well it goes | `state/TREE.md` (`autolab tree`), `autolab candidate list`, `autolab report metrics` |
 | Inspect a turn | `scripts/pi_log_summary.py <log>`: tool calls, blocked actions, errors, final report, cost |
 | Watch from another machine | `scripts/watch_turn.sh <project> <turn-number>` prints DONE / RUNNING / WAITING / STALLED / LOOP_DOWN |
 
@@ -195,6 +196,10 @@ human (00_human/) ──► PI turn: autolab tick → digest → decide → task
 - **Knowledge gate**: before any new direction, `autolab preflight` builds a context pack from failed ideas, rejected claims, findings, literature (with reading receipts for key papers) and your uploads. `plan.md` must answer every item, and `autolab gate plan` must pass before anything is submitted. Plans are locked once a job runs.
 - **Skills are invoked, not just listed**: `autolab task new` writes a task card with the model for its difficulty (haiku / sonnet / opus) and the *required* skills of its route (`required` in `core/skills.toml`). Students must invoke them with the Skill tool; the handoff gate and the plan gate check the turn logs and send work back when a required skill was never invoked. Each tick digest lists the skills used.
 - **Research map and memory**: `state/HYPOTHESES.md` (the hypotheses, their status and evidence; every plan names the H-ids it tests), `state/DECISIONS.md` (append-only, written by `autolab decide`), and a retrospective every `gates.retro_every` ticks whose rules (`autolab lesson add`) appear in later context packs.
+- **Candidates and discrimination**: every hypothesis a plan tests has a card in `state/candidates/<H>.md` (`autolab candidate new|list|check|set`): closest prior work, mechanism difference, evidence for and against, key uncertainty, the smallest discriminating experiment, cost, and continue / pause / kill conditions. The plan gate requires the cards and a `## Discrimination` section: which explanations the experiment separates and which decision each outcome leads to. Rankings between candidates are advice only.
+- **Outcomes in three layers**: `autolab outcome <E>` records engineering (valid / invalid), hypothesis (supports / refutes / inconclusive) and value (continue / refine / pivot / stop). An invalid run is rerun, never counted against the direction; pivot and stop go to you automatically (or are logged for review under DELEGATED). New plans wait until every finished experiment has an outcome. The analysis script is fingerprinted at the first submission; later changes must be explained in `plan_amendments.md`. Plans name their `parent` experiment and `autolab tree` draws the search (`state/TREE.md`).
+- **Scoped lessons**: `autolab lesson add` requires the conditions a lesson was learned under (`--when data=... --when resolution=...`), its source experiment, fingerprinted evidence, a confidence and a recheck condition; `autolab lesson support|counter|retire` records later evidence. Context packs show each lesson with its scope and confidence, so a rule learned on synthetic 256^3 data is not applied silently to a real 3D case.
+- **Metrics**: `autolab report metrics` (`state/METRICS.md`) reports claim send-back rate, valid hypothesis tests, repeated failures, lesson use, human corrections and cost per credible result; every PI turn and reviewer call is logged in one format in `state/calls.jsonl` (models, tokens, cost, duration, status). `docs/EVALUATION_DESIGN.md` is a design (not yet run) for comparing autolab with a plain coding agent and with its own ablations.
 - **Precision before compute**: the plan gate requires a `## Precision` section (unit of replication, planned n, expected CI or detectable effect, source of the variance estimate), made with the `statistical-power` skill.
 - **Jobs**: many similar runs go out as one job array (`array = "0-25%8"`); after each job the digest shows its real CPU efficiency and peak memory so the next request is sized from data.
 - **Handoff cards**: students report in a fixed format (what was done, numbers with their source files, deviations, anomalies); numbers in experiment cards are checked against the result files.
@@ -229,6 +234,7 @@ autolab/
 ├── templates/     new-project template (human zone, autolab.toml, CLAUDE.md protocol for the PI)
 ├── src/autolab/   the `autolab` tool (Python standard library only)
 ├── scripts/       env.sh, run_pi.sh (loop), watch_turn.sh, pi_log_summary.py, fetch_vendor.sh, cluster/reviewer checks
+├── docs/          design notes (EVALUATION_DESIGN.md: comparative evaluation, not yet run)
 └── tests/         interface tests: python -m unittest discover -s tests
 ```
 

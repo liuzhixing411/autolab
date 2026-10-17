@@ -20,7 +20,7 @@ sys.path.insert(0, str(FW / "src"))
 os.environ["AUTOLAB_HOME"] = str(FW)
 
 from autolab import (cli, gates, handoff, hooks, human, knowledge, ledger, project,  # noqa: E402
-                     reviewer, skills, slurm, tick)
+                     report, research, reviewer, skills, slurm, tasks, tick)
 from autolab.config import Config  # noqa: E402
 from autolab.util import read_frontmatter, read_json, read_jsonl, write_json  # noqa: E402
 
@@ -83,10 +83,19 @@ hours = 1.5
 
 ## Precision
 Unit: seed. Planned n = 5 seeds; pilot SD of the slope 0.08 gives a 95% CI half-width of about 0.1, enough to decide the rule.
+
+## Discrimination
+Separates Weber scaling (H1) from a Reynolds-dominated alternative: the two predict different slopes.
+If the result supports H1 (slope 0.4-0.6) we extend to three nozzles; if it refutes H1 we test the Reynolds model.
 """)
     hyp = cfg.layout.state / "HYPOTHESES.md"
     if not hyp.is_file() or "<<FILL" in hyp.read_text(encoding="utf-8"):
         write(hyp, "| H1 | - | Breakup frequency scales with Weber number | open | - | - | E001 |\n")
+    if research.candidate(cfg, "H1") is None:
+        research.new_candidate(cfg, "H1", "Breakup frequency scales with Weber number",
+                               closest_work="L0001 regime map", mechanism_difference="jet shear instead of turbulence",
+                               key_uncertainty="slope at high Weber", discriminating_experiment="E001 slope fit",
+                               continue_if="slope 0.4-0.6", kill_if="slope outside 0.2-0.8")
     for i in pack["items"]:
         if i["kind"] == "literature" and i["must_read"]:
             note = knowledge.note_template(cfg, i["id"])
@@ -1301,9 +1310,12 @@ class Workflow(unittest.TestCase):
         self.assertIsNone(tasks.retro_due(self.cfg, 30))
         self.assertEqual(tasks.retro_due(self.cfg, 45), 25)
         lid = tasks.add_lesson(self.cfg, "Size seeds from a pilot variance before timing runs",
-                               "three seeds gave a CI from -1.3 to 15.9", ["timing", "seeds", "bubble"])
+                               "RETRO-25", ["timing", "seeds", "bubble"], {"data": "synthetic V1", "resolution": "256^3"},
+                               recheck="real data or other resolutions")
         pack = knowledge.build_context_pack(self.cfg, "bubble timing study", ["bubble", "timing", "seeds"])
         self.assertIn(lid, [i["id"] for i in pack["items"]])
+        md = (self.cfg.layout.context_packs / f"{pack['id']}.md").read_text(encoding="utf-8")
+        self.assertIn("only under: data=synthetic V1, resolution=256^3", md)
 
     def test_tick_reports_skill_use(self):
         from autolab import tick
@@ -1312,6 +1324,167 @@ class Workflow(unittest.TestCase):
         res = tick.run(self.cfg)
         digest = Path(res["digest"]).read_text(encoding="utf-8")
         self.assertIn("analyze-results x2", digest)
+
+
+def finish_jobs(cfg: Config, eid: str, job: str = "777") -> None:
+    """Pretend one job of `eid` was submitted and finished (usage recorded)."""
+    from autolab.util import append_jsonl, now_iso
+    exp = cfg.layout.experiments / eid
+    append_jsonl(exp / "jobs.jsonl", {"job": job, "eid": eid, "submitted": now_iso(),
+                                      "resources": {"total_cpus": 4, "billed_cpus": 4, "hours": 1}})
+    append_jsonl(exp / "jobs_usage.jsonl", {"job": job, "state": "COMPLETED", "elapsed_h": 0.5,
+                                            "core_hours": 2.0, "requested": {"total_cpus": 4}})
+
+
+class ResearchSteering(unittest.TestCase):
+    """Candidate registry, discrimination, frozen evaluator, outcomes, tree, scoped lessons, metrics."""
+
+    def setUp(self):
+        self.root, self.cfg = make_project()
+
+    def test_plan_needs_candidate_cards_and_discrimination(self):
+        res, _ = passing_plan(self.cfg)
+        self.assertTrue(res["ok"], res)
+        plan = self.cfg.layout.experiments / "E001" / "plan.md"
+        text = plan.read_text(encoding="utf-8")
+        hyp = self.cfg.layout.state / "HYPOTHESES.md"
+        write(hyp, hyp.read_text(encoding="utf-8") + "| H2 | - | Reynolds model | open | - | - | - |\n")
+        plan.write_text(text.replace('hypotheses = ["H1"]', 'hypotheses = ["H1", "H2"]'), encoding="utf-8")
+        self.assertIn("state/candidates/H2.md", " ".join(knowledge.check_plan(self.cfg, "E001")["problems"]))
+        research.new_candidate(self.cfg, "H2", "Reynolds model")            # card exists but is empty
+        self.assertIn("candidate H2: fill", " ".join(knowledge.check_plan(self.cfg, "E001")["problems"]))
+        plan.write_text(text.split("## Discrimination")[0], encoding="utf-8")
+        self.assertIn("Discrimination", " ".join(knowledge.check_plan(self.cfg, "E001")["problems"]))
+        plan.write_text(text.replace('hypotheses = ["H1"]', 'hypotheses = ["H1"]\nparent = "E000"'), encoding="utf-8")
+        self.assertIn("parent experiment E000", " ".join(knowledge.check_plan(self.cfg, "E001")["problems"]))
+        research.set_candidate(self.cfg, "H1", "killed", "slope far outside the range")
+        plan.write_text(text, encoding="utf-8")
+        self.assertIn("killed", " ".join(knowledge.check_plan(self.cfg, "E001")["problems"]))
+        self.assertIn("candidate H1 -> killed", (self.cfg.layout.state / "DECISIONS.md").read_text(encoding="utf-8"))
+        self.assertEqual(research.discrimination_problems(
+            "## Discrimination\nSeparates A from B because they predict opposite signs of the drift.\n"
+            "If it supports A we scale up; if it refutes A we drop the method.\n"), [])
+
+    def test_outcome_layers_and_pivot_goes_to_human(self):
+        passing_plan(self.cfg)
+        with self.assertRaises(ValueError):                                  # invalid run, research conclusion
+            research.record_outcome(self.cfg, "E001", "invalid", "refutes", "refine", "OOM")
+        with self.assertRaises(ValueError):                                  # invalid run cannot kill a line
+            research.record_outcome(self.cfg, "E001", "invalid", "n/a", "stop", "OOM")
+        rec = research.record_outcome(self.cfg, "E001", "invalid", "n/a", "refine", "node ran out of memory")
+        self.assertFalse(rec.get("needs_human"))
+        rec = research.record_outcome(self.cfg, "E001", "valid", "refutes", "pivot", "slope 0.1, far below",
+                                      ["experiments/E001/plan.md"])
+        self.assertTrue(rec["needs_human"])
+        acts = human.open_actions(self.cfg)
+        self.assertTrue(any("BLOCKING" in a and "PIVOT" in a for a in acts), acts)
+        self.assertIn("E001 outcome", (self.cfg.layout.state / "DECISIONS.md").read_text(encoding="utf-8"))
+        self.assertEqual(len(read_jsonl(self.cfg.layout.experiments / "E001" / "outcomes.jsonl")), 2)
+        write(self.cfg.layout.human / "DELEGATED", 'until = "2999-01-01T00:00:00"\nto = "pi"\n')
+        rec = research.record_outcome(self.cfg, "E001", "valid", "refutes", "stop", "confirmed twice")
+        self.assertFalse(rec.get("needs_human"))
+        self.assertTrue(any("delegation" in a and "optional" in a for a in human.open_actions(self.cfg)))
+
+    def test_frozen_evaluator_needs_amendment(self):
+        passing_plan(self.cfg)
+        exp = self.cfg.layout.experiments / "E001"
+        plan = exp / "plan.md"
+        plan.write_text(plan.read_text(encoding="utf-8").replace(
+            'run_command = "echo run"', 'run_command = "echo run"\nanalysis_command = "python analysis/analyze.py"'),
+            encoding="utf-8")
+        write(exp / "analysis" / "analyze.py", "print('mean')\n")
+        rec = research.freeze_evaluator(self.cfg, "E001")
+        self.assertIn("analysis/analyze.py", rec["files"])
+        write(exp / "analysis" / "analyze.py", "print('median')\n")       # changed after submission
+        with self.assertRaises(ValueError):
+            research.record_outcome(self.cfg, "E001", "valid", "supports", "continue", "slope 0.5")
+        write(exp / "plan_amendments.md", "2026-10-17: analysis/analyze.py uses the median: heavy tails seen in "
+                                          "the pilot, decided before reading the full results.\n")
+        self.assertEqual(research.record_outcome(self.cfg, "E001", "valid", "supports", "continue", "slope 0.5")
+                         ["hypothesis"], "supports")
+        d = lambda tool, **inp: hooks.decide({"tool_name": tool, "tool_input": inp}, self.root)[0]
+        self.assertFalse(d("Edit", file_path="experiments/E001/evaluator.json"))
+        self.assertFalse(d("Bash", command="echo {} > experiments/E001/outcome.json"))
+        self.assertFalse(d("Write", file_path="experience/lessons.jsonl"))
+        self.assertTrue(d("Bash", command="autolab outcome E001 --engineering valid --hypothesis n/a --value refine --why x"))
+        self.assertTrue(d("Bash", command="cat experiments/E001/outcomes.jsonl"))
+
+    def test_finished_experiment_blocks_new_plans_and_tree(self):
+        passing_plan(self.cfg)
+        finish_jobs(self.cfg, "E001")
+        self.assertEqual(research.missing_outcomes(self.cfg), ["E001"])
+        res, _ = passing_plan(self.cfg, "E002")
+        self.assertIn("without an outcome", " ".join(res["problems"]))
+        research.record_outcome(self.cfg, "E001", "valid", "supports", "refine", "slope 0.55, CI 0.48-0.62")
+        plan = self.cfg.layout.experiments / "E002" / "plan.md"
+        plan.write_text(plan.read_text(encoding="utf-8").replace('hypotheses = ["H1"]', 'hypotheses = ["H1"]\nparent = "E001"'),
+                        encoding="utf-8")
+        self.assertTrue(knowledge.check_plan(self.cfg, "E002")["ok"])
+        finish_jobs(self.cfg, "E001", job="778")                             # a rerun needs a new outcome
+        self.assertEqual(research.missing_outcomes(self.cfg), ["E001"])
+        text = research.tree(self.cfg)
+        self.assertIn("- E001 [H1] valid/supports/refine, 4.0 ch", text)
+        self.assertIn("  - E002 [H1] open", text)
+        digest = Path(tick.run(self.cfg)["digest"]).read_text(encoding="utf-8")
+        self.assertIn("Finished experiments without an outcome: E001", digest)
+        self.assertIn("H1 [open]", digest)
+
+    def test_scoped_lessons(self):
+        with self.assertRaises(ValueError):                                  # no conditions
+            tasks.add_lesson(self.cfg, "screening helps", "E003", ["screen"], recheck="x")
+        with self.assertRaises(ValueError):                                  # unknown condition key
+            tasks.add_lesson(self.cfg, "screening helps", "E003", ["screen"], {"mood": "good"}, recheck="x")
+        with self.assertRaises(ValueError):                                  # vague origin
+            tasks.add_lesson(self.cfg, "screening helps", "a feeling", ["screen"], {"data": "V1"}, recheck="x")
+        write(self.root / "experiments" / "E003" / "summary.json", "{}")
+        lid = tasks.add_lesson(self.cfg, "Foreground-only screening saves 30%", "E003", ["screen"],
+                               {"data": "synthetic V1", "resolution": "256^3"}, ["experiments/E003/summary.json"],
+                               "medium", "real 3D data, where the gas region is large")
+        tasks.lesson_event(self.cfg, lid, "counter", "E004", "no gain on the real 3D case", "low")
+        tasks.lesson_event(self.cfg, lid, "support", "E005", "same gain at 384^3 synthetic")
+        l = next(x for x in tasks.lessons(self.cfg) if x["id"] == lid)
+        self.assertEqual((len(l["support"]), len(l["counter"]), l["confidence"]), (1, 1, "low"))
+        self.assertIn("experiments/E003/summary.json", l["evidence"])
+        tasks.lesson_event(self.cfg, lid, "retire", "E006", "superseded by the new screen")
+        self.assertEqual([x["id"] for x in tasks.lessons(self.cfg)], [])
+        rc, out = run_cli("--project", str(self.root), "lesson", "list", "--all")
+        self.assertIn("(retired)", out)
+
+    def test_metrics_and_call_record(self):
+        from autolab import budget
+        passing_plan(self.cfg)
+        log = write(self.cfg.layout.state / "pi_logs" / "t1.jsonl", "\n".join([
+            json.dumps({"type": "assistant", "message": {"id": "m1", "model": "claude-opus", "usage": {"input_tokens": 10, "output_tokens": 5}}}),
+            json.dumps({"type": "result", "subtype": "success", "is_error": False, "total_cost_usd": 1.5,
+                        "duration_ms": 61000, "num_turns": 7})]) + "\n")
+        killed = write(self.cfg.layout.state / "pi_logs" / "t2.jsonl", json.dumps(
+            {"type": "assistant", "message": {"id": "m2", "model": "claude-opus", "usage": {"input_tokens": 3}}}) + "\n")
+        budget.record_turn(self.cfg, log)
+        budget.record_turn(self.cfg, killed)
+        calls = read_jsonl(self.cfg.layout.state / "calls.jsonl")
+        self.assertEqual([c["status"] for c in calls], ["ok", "no_result"])
+        self.assertEqual(calls[0]["duration_s"], 61.0)
+        self.assertEqual(calls[0]["models"], ["claude-opus"])
+        finish_jobs(self.cfg, "E001")
+        research.record_outcome(self.cfg, "E001", "valid", "supports", "continue", "slope 0.5")
+        rc, out = run_cli("--project", str(self.root), "report", "metrics", "--json")
+        m = json.loads(out)
+        self.assertEqual(m["experiments"]["valid_hypothesis_tests"], 1)
+        self.assertEqual(m["calls"]["pi_turn"], {"ok": 1, "no_result": 1})
+        self.assertEqual(m["cost"]["core_hours"], 2.0)
+        self.assertTrue((self.cfg.layout.state / "METRICS.md").is_file())
+
+    def test_candidate_cli(self):
+        rc, out = run_cli("--project", str(self.root), "candidate", "new", "H7", "--statement", "Landmarks certify connectivity",
+                          "--closest-work", "L0052 dynamic connectivity", "--mechanism-difference", "geometric landmarks",
+                          "--key-uncertainty", "landmark density", "--discriminating-experiment", "replay E004 D",
+                          "--continue-if", "skip rate > 50%", "--kill-if", "skip rate < 10%")
+        self.assertEqual(rc, 0)
+        self.assertIn("H7", (self.cfg.layout.state / "HYPOTHESES.md").read_text(encoding="utf-8"))
+        rc, _ = run_cli("--project", str(self.root), "candidate", "check", "H7")
+        self.assertEqual(rc, 0)
+        rc, out = run_cli("--project", str(self.root), "candidate", "list")
+        self.assertIn("H7 [open]", out)
 
 
 if __name__ == "__main__":

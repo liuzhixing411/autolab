@@ -289,8 +289,10 @@ def submit(cfg: Config, eid: str, part: str | None = None) -> dict:
                            f"that wrote them commits them from the project root (`git add {shown} && git commit -m "
                            f"\"{eid}: <what changed>\"`), then submits again. Results, logs and pilot outputs are "
                            "not checked.")
+    from autolab import research
+    research.freeze_evaluator(cfg, eid)          # fix the analysis before any result exists
     path, r = render(cfg, eid, part)
-    cap = float(cfg["slurm"].get("total_core_hours") or 0)
+    cap =float(cfg["slurm"].get("total_core_hours") or 0)
     request = r["billed_cpus"] * r["hours"] * r["array_size"]
     # check and reserve in one step: concurrent submits used to pass the cap together
     with FileLock(cfg.layout.state / "slurm_submit"):
@@ -444,7 +446,8 @@ def usage(job: str) -> dict:
             rss = max(rss, _gb(maxrss))
     return {"tasks": tasks, "elapsed_h": round(elapsed / 3600, 3),
             "cpu_efficiency": round(cpu_used / cpu_alloc, 3) if cpu_alloc else None,
-            "max_rss_gb": round(rss, 2), "req_mem_gb": round(req, 1)}
+            "max_rss_gb": round(rss, 2), "req_mem_gb": round(req, 1),
+            "core_hours": round(cpu_alloc / 3600, 2)}
 
 
 def record_usage(cfg: Config) -> list[str]:

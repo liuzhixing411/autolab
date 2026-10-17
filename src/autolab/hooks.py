@@ -28,6 +28,10 @@ HUMAN_WRITABLE = {"ACTION_NEEDED.md", "ACK.md"}
 HUMAN_CONFIG = ("autolab.toml", ".claude/settings", ".claude/agents/", "CLAUDE.md")
 # written only through `autolab decide`, so past decisions cannot be rewritten after the fact
 APPEND_ONLY = ("state/DECISIONS.md",)
+# records only autolab commands write: the frozen evaluator, outcomes, lessons, spend and call logs
+CLI_OWNED = re.compile(r"^(experiments/[^/]+/(evaluator\.json|outcomes?\.jsonl?|outcome\.json)|"
+                       r"experience/lessons\.jsonl|state/(calls|budget)\.jsonl)$")
+_CLI_OWNED_TEXT = ("evaluator.json", "outcome.json", "outcomes.jsonl", "lessons.jsonl", "calls.jsonl", "budget.jsonl")
 _AUTOLAB_CMD = re.compile(r"^\s*(autolab|python3?\s+-m\s+autolab|\S*python\S*\s+-m\s+autolab)\b")
 _RAW_SLURM = re.compile(r"(^|[;&|`(]\s*|\s)(sbatch|scancel)\b")
 _SEGMENT_SPLIT = re.compile(r"&&|\|\||;|\||\n")
@@ -112,7 +116,7 @@ def _interpreter_writes(cmd: str, root: Path) -> str:
     plain = re.sub(r"\d?>&\d|\d?>\s*/dev/null", " ", cmd)           # stream merges are not writes
     if not _INTERP.search(plain) or not _WRITE_OPS.search(plain):
         return ""
-    paths = list(HUMAN_CONFIG) + list(APPEND_ONLY) + ["findings/", "00_human/"]
+    paths = list(HUMAN_CONFIG) + list(APPEND_ONLY) + list(_CLI_OWNED_TEXT) + ["findings/", "00_human/"]
     paths += [p.parent.relative_to(root).as_posix() + "/plan.md"
               for p in (root / "experiments").glob("*/jobs.jsonl")] if (root / "experiments").is_dir() else []
     for p in paths:
@@ -154,6 +158,10 @@ def decide(event: dict, root: Path) -> tuple[bool, str]:
                            "Ask for a change with `autolab human request --kind approval`.")
         if rel in APPEND_ONLY:
             return False, f"{rel} is append-only: add entries with `autolab decide \"...\" --why \"...\"`."
+        if CLI_OWNED.match(rel):
+            return False, (f"{rel} is written only by autolab commands (`autolab outcome`, `autolab lesson`, "
+                           "`autolab slurm submit`, the runner). A changed analysis script is explained in "
+                           "plan_amendments.md, not by editing the frozen fingerprint.")
         m = re.match(r"experiments/([^/]+)/plan\.md$", rel)
         if m and (root / "experiments" / m.group(1) / "jobs.jsonl").exists():
             return False, (f"plan.md of {m.group(1)} is locked (a job was submitted). "
@@ -190,6 +198,9 @@ def decide(event: dict, root: Path) -> tuple[bool, str]:
                            f"({', '.join(HUMAN_CONFIG)}); ask with `autolab human request --kind approval`.")
         if any(_writes_into(cmd, p) for p in APPEND_ONLY):
             return False, "state/DECISIONS.md is append-only: use `autolab decide`."
+        if any(_writes_into(cmd, p) for p in _CLI_OWNED_TEXT):
+            return False, ("Outcome, evaluator, lesson, budget and call records are written only by autolab "
+                           "commands (`autolab outcome`, `autolab lesson ...`).")
         hit = _interpreter_writes(cmd, root)
         if hit:
             return False, (f"A script that writes files mentions the protected path '{hit}'. Protected files change "

@@ -12,6 +12,7 @@ import json
 import re
 import shutil
 import subprocess
+import time
 from pathlib import Path
 
 from autolab.config import Config
@@ -164,11 +165,24 @@ def run(cfg: Config, task: str, files: list[Path], instructions: str = "",
         out_file = out_dir / f"{rid}.last.md"
         cmd = [c.format(model=r["model"], effort=r["effort"], workdir=str(root), out_file=str(out_file))
                for c in cfg["reviewer"]["command"]]
-        proc = subprocess.run(cmd, input=prompt, capture_output=True, text=True,
-                              timeout=cfg["reviewer"]["timeout_s"], cwd=root)
+        from autolab import budget
+        t0 = time.time()
+        try:
+            proc = subprocess.run(cmd, input=prompt, capture_output=True, text=True,
+                                  timeout=cfg["reviewer"]["timeout_s"], cwd=root)
+        except subprocess.TimeoutExpired:
+            budget.record_call(cfg, "review", "timeout", [r["model"]], duration_s=round(time.time() - t0, 1),
+                               ref=rid, extra={"task": task})
+            raise RuntimeError(f"reviewer timed out after {cfg['reviewer']['timeout_s']} s")
         write_atomic(out_dir / f"{rid}.stderr.log", proc.stderr[-20000:])
+        m = re.search(r"tokens used[:\s]*([\d,]+)", proc.stderr + proc.stdout)
+        call = {"models": [r["model"]], "duration_s": round(time.time() - t0, 1), "ref": rid,
+                "usage": {r["model"]: {"total_tokens": int(m.group(1).replace(",", ""))}} if m else {},
+                "extra": {"task": task, "backend": backend}}
         if proc.returncode != 0:
+            budget.record_call(cfg, "review", "error", error=proc.stderr[-500:], **call)
             raise RuntimeError(f"reviewer failed ({proc.returncode}): {proc.stderr[-2000:]}")
+        budget.record_call(cfg, "review", "ok", usd=float(cfg["reviewer"].get("usd_per_call", 0) or 0) or None, **call)
         raw = out_file.read_text(encoding="utf-8") if out_file.is_file() else proc.stdout
     else:
         raise ValueError(f"unknown reviewer backend '{backend}'")

@@ -43,6 +43,10 @@ def protected(cfg: Config) -> dict[str, str]:
     files += [p for p in cfg.layout.findings.rglob("*") if p.is_file()]
     files.append(cfg.layout.state / "DECISIONS.md")
     files += [p.parent / "plan.md" for p in cfg.layout.experiments.glob("*/jobs.jsonl")]
+    for name in ("evaluator.json", "outcome.json", "outcomes.jsonl"):   # written by autolab commands only
+        files += list(cfg.layout.experiments.glob(f"*/{name}"))
+    files += [cfg.layout.experience / "lessons.jsonl", cfg.layout.state / "calls.jsonl",
+              cfg.layout.state / "budget.jsonl"]
     out = {}
     for p in files:
         if p.is_file():

@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.5.0 — 2026-10-17
+
+Research steering, adapted from tree-search and hypothesis-tournament systems but kept auditable:
+- **Candidate registry**: `state/candidates/<H>.md` cards (`autolab candidate new|list|check|set`) with closest prior work, mechanism difference, evidence for/against, key uncertainty, smallest discriminating experiment, cost and continue/pause/kill conditions. The plan gate requires a filled card for every tested hypothesis (killed ones are refused) and a `## Discrimination` section with the decision for each outcome. Rankings are advisory.
+- **Frozen evaluator**: the scripts of `analysis_command` are fingerprinted at the first submission (`evaluator.json`); an outcome is refused if they changed without an explanation in `plan_amendments.md`.
+- **Three-layer outcomes**: `autolab outcome <E>` (engineering valid/invalid; hypothesis supports/refutes/inconclusive/n/a; value continue/refine/pivot/stop). Invalid runs cannot carry a research conclusion or stop a line. Pivot/stop create a blocking human request (non-blocking review note under DELEGATED) and every outcome is logged with `autolab decide`. New plans are blocked while a finished experiment (or a rerun) has no outcome.
+- **Search tree**: plan `parent` field; `autolab tree` writes `state/TREE.md` (outcome, core-hours and reason per experiment), refreshed every tick.
+- **Scoped lessons**: lessons need conditions (`--when key=value`), a source (E/C/F/RETRO id), fingerprinted evidence, confidence and a recheck condition; `autolab lesson support|counter|retire|list`. Context packs (now also in their Markdown view) show scope and confidence.
+- **Metrics and call record**: `autolab report metrics` (`state/METRICS.md`); `state/calls.jsonl` records every PI turn and reviewer call in one format (status ok/error/timeout/no_result, models, tokens, cost, duration). Job usage records allocated core-hours.
+- Hook and integrity guard protect the new records (evaluator, outcomes, lessons, budget and call logs) from direct edits.
+- `docs/EVALUATION_DESIGN.md`: design (not run) for comparing autolab with a plain coding agent and with ablations.
+
 ## 0.4.0 — 2026-10-17
 
 Fixes from an external code review (all reproduced first):

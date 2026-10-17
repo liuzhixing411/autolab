@@ -211,9 +211,11 @@ def _sources(cfg: Config) -> list[dict]:
     for e in read_jsonl(L.experience / "error-cookbook.jsonl"):
         items.append({"id": e.get("id", "ERR"), "kind": "known_error", "title": e.get("symptom", ""),
                       "text": " ".join(str(v) for v in e.values())})
-    for e in read_jsonl(L.experience / "lessons.jsonl"):        # rules from retrospectives
-        items.append({"id": e.get("id", "LS"), "kind": "lesson", "title": e.get("lesson", "")[:120],
-                      "text": " ".join(str(v) for v in e.values())})
+    from autolab.tasks import lesson_label, lessons
+    for e in lessons(cfg):                       # scoped rules from experiments and retrospectives
+        items.append({"id": e["id"], "kind": "lesson", "title": lesson_label(e),
+                      "text": " ".join([e["lesson"], " ".join(e.get("keywords", [])),
+                                        " ".join(str(v) for v in e.get("when", {}).values())])})
     return items
 
 
@@ -311,7 +313,7 @@ def build_context_pack(cfg: Config, topic: str, keywords: list[str],
              "Answer every item in your plan under `## Prior knowledge consulted`:",
              "one line per ID saying how it changes the plan (or why it does not apply).",
              "Items marked MUST are mandatory reading; literature needs a reading receipt.", ""]
-    for kind in ("failed_idea", "rejected_claim", "upload", "finding", "literature", "known_error"):
+    for kind in ("failed_idea", "rejected_claim", "upload", "finding", "lesson", "literature", "known_error"):
         group = [c for c in chosen if c["kind"] == kind]
         if group:
             lines.append(f"## {kind.replace('_', ' ')}")
@@ -386,7 +388,8 @@ def check_plan(cfg: Config, eid: str) -> dict:
                         problems.append(f"{item['id']} has full text but receipt says '{rc.get('read_level')}'")
 
     _check_precision_and_map(cfg, plan, meta, body, problems, warnings)
-    result = {"eid": eid, "ok": not problems, "problems": problems, "warnings": warnings,
+    _check_candidates(cfg, eid, meta, body, problems, warnings)
+    result ={"eid": eid, "ok": not problems, "problems": problems, "warnings": warnings,
               "checked": now_iso(), "plan_hash": sha256_tree(plan)}
     write_json(exp / "plan_gate.json", result)
     return result
@@ -424,6 +427,26 @@ def _check_precision_and_map(cfg: Config, plan: Path, meta: dict, body: str,
             problems.append(f"planning skills {missing} were not invoked (Skill tool) while this plan was written")
     elif need:
         warnings.append(f"no turn logs: could not verify that {need} were invoked")
+
+
+def _check_candidates(cfg: Config, eid: str, meta: dict, body: str,
+                      problems: list[str], warnings: list[str]) -> None:
+    """Each tested hypothesis needs a candidate card, and the plan must say what it discriminates
+    and which decision each outcome leads to; finished experiments need an outcome first, so a
+    failed run is classified (environment vs. direction) before the next plan builds on it."""
+    from autolab import research
+    if cfg["gates"].get("require_candidates", True):
+        for h in meta.get("hypotheses") or []:
+            problems += research.card_problems(cfg, h)
+        problems += research.discrimination_problems(body)
+    parent = str(meta.get("parent", "") or "")
+    if parent and not (cfg.layout.experiments / parent / "plan.md").is_file():
+        problems.append(f"parent experiment {parent} does not exist")
+    if cfg["gates"].get("require_outcomes", True):
+        open_ = [e for e in research.missing_outcomes(cfg) if e != eid]
+        if open_:
+            problems.append(f"finished experiments without an outcome: {open_}; record each with `autolab outcome "
+                            "<E> --engineering valid|invalid --hypothesis ... --value ... --why ...` first")
 
 
 def plan_gate_passed(cfg: Config, eid: str) -> bool:

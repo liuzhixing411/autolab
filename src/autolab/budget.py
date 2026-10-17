@@ -59,6 +59,9 @@ def record_cost(cfg: Config, source: str, usd: float | None, extra: dict | None 
 
 def record_turn(cfg: Config, log: Path, source: str = "pi_turn") -> dict:
     cost, usage = cost_from_log(log)
+    info = turn_info(log)
+    record_call(cfg, source, info["status"], sorted(usage), usage, cost, info["duration_s"], str(log),
+                info["error"], {"num_turns": info["num_turns"], "subtype": info.get("subtype")})
     return record_cost(cfg, source, cost, {"log": str(log), "usage": usage}, known=cost is not None)
 
 
@@ -90,3 +93,44 @@ def turn_cap(cfg: Config) -> float | None:
     st = status(cfg)
     caps = [c for c in (st["remaining_usd"], float(cfg["budget"].get("max_turn_usd") or 0) or None) if c]
     return round(max(min(caps), 0.01), 2) if caps else None
+
+
+# ---------------------------------------------------------------- unified call record
+
+def _calls(cfg: Config) -> Path:
+    return cfg.layout.state / "calls.jsonl"
+
+
+def record_call(cfg: Config, kind: str, status: str, models: list[str], usage: dict | None = None,
+                usd: float | None = None, duration_s: float | None = None, ref: str = "",
+                error: str = "", extra: dict | None = None) -> dict:
+    """One record per model call of the lab (PI turn with its subagents, reviewer call), same shape
+    for every backend: kind, status (ok | error | timeout | no_result), models, token usage, cost,
+    duration, reference (log file or review id) and the error text. `autolab report metrics`
+    reads it; the budget ledger stays the spend authority."""
+    rec = {"at": now_iso(), "kind": kind, "status": status, "models": models, "usage": usage or {},
+           "usd": usd, "duration_s": duration_s, "ref": ref, **({"error": error[-500:]} if error else {}),
+           **(extra or {})}
+    with FileLock(_calls(cfg)):
+        append_jsonl(_calls(cfg), rec)
+    return rec
+
+
+def turn_info(log: Path) -> dict:
+    """Status of a PI turn from its stream-json log: the `result` event's subtype and duration,
+    or no_result when the turn was killed (time limit, crash) before it ended."""
+    info = {"status": "no_result", "duration_s": None, "num_turns": None, "error": ""}
+    for line in log.read_text(encoding="utf-8", errors="ignore").splitlines():
+        try:
+            ev = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if ev.get("type") == "result":
+            sub = str(ev.get("subtype", ""))
+            info["status"] = "ok" if sub == "success" and not ev.get("is_error") else "error"
+            info["subtype"] = sub
+            info["duration_s"] = round(float(ev.get("duration_ms") or 0) / 1000, 1)
+            info["num_turns"] = ev.get("num_turns")
+            if info["status"] == "error":
+                info["error"] = str(ev.get("result") or sub)[:500]
+    return info

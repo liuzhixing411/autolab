@@ -61,6 +61,8 @@ DEFAULTS: dict[str, Any] = {
         "stall_rounds": 2,
         "require_reading_receipts_tier": "A",
         "retro_every": 20,                 # ticks between retrospectives (0 = never)
+        "require_candidates": True,        # plan gate: candidate cards + a Discrimination section
+        "require_outcomes": True,          # finished experiments must get `autolab outcome` before new plans
         "context_pack_max_items": 12,
         "download_request_tiers": ["A"],      # only these tiers trigger automatic download requests
     },

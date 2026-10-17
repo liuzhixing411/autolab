@@ -1,7 +1,8 @@
 +++
 id = "<<FILL: E001>>"
 context_pack = "<<FILL: CP001 from `autolab preflight`>>"
-hypotheses = ["<<FILL: H-ids from state/HYPOTHESES.md that this experiment tests>>"]
+hypotheses = ["<<FILL: H-ids from state/HYPOTHESES.md that this experiment tests; each needs state/candidates/<H>.md>>"]
+parent = ""            # the experiment this one follows from (E-id), "" for a new line; drawn by `autolab tree`
 hypothesis = "<<FILL: one falsifiable sentence>>"
 prediction = "<<FILL: expected value/range of the primary metric, with confidence>>"
 decision_rule = "<<FILL: if X then next do A; if Y then B; if invalid then C>>"
@@ -36,6 +37,12 @@ gpus = 0
      the unit of replication, planned n (seeds, runs, frames), the expected confidence-interval half-width or the
      smallest effect the design can detect, and where the variance estimate comes from (pilot, earlier experiment,
      assumption). If n is too small to decide the decision rule, say so and increase n before submitting. -->
+
+## Discrimination
+<!-- Required by the plan gate. Which competing explanations or candidates (H-ids, alternatives from the candidate
+     cards) does this experiment separate, and why can the result tell them apart? Then the decision each outcome
+     leads to: "If the result supports H14 (metric > x), we ... ; if it refutes H14, we ... ; if inconclusive, ...".
+     An experiment whose every outcome leads to the same next step is not worth running. -->
 
 ## Pilot first
 <!-- the cheap version that runs first and the signal that justifies the full run -->
