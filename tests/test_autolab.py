@@ -434,6 +434,7 @@ class ClaimGate(unittest.TestCase):
         e = self.cfg.layout.experiments / "E001"
         write(e / "results" / "metrics.json", '{"slope": 0.52}')
         write(e / "results" / "mesh_convergence.json", '{"gci_fine": 0.012}')
+        research.record_outcome(self.cfg, "E001", "valid", "supports", "continue", "Validated slope and mesh study")
 
     def claim(self, cid, grade="B", review=None, validation=True):
         val = '[validation]\nmesh_convergence = "experiments/E001/results/mesh_convergence.json"\n' if validation else ""
@@ -485,6 +486,7 @@ pi_grade = "{grade}"
         claim.write_text(claim.read_text(encoding="utf-8").replace("We^0.9", "We^0.52"), encoding="utf-8")
         self.assertEqual(gates.claim_gate(self.cfg, "C010")["decision"], "accepted")      # back to the reviewed version
         write(self.cfg.layout.experiments / "E001" / "results" / "metrics.json", '{"slope": 0.91}')
+        research.record_outcome(self.cfg, "E001", "valid", "supports", "continue", "Updated analysis")
         res = gates.claim_gate(self.cfg, "C010")
         self.assertEqual(res["decision"], "needs_review")
         self.assertIn("evidence:experiments/E001/results/metrics.json", " ".join(res["reasons"]))
@@ -902,14 +904,14 @@ class Hooks(unittest.TestCase):
         project._write_settings(self.cfg)
         s = read_json(self.root / ".claude" / "settings.json")
         root = self.root.resolve().as_posix()
-        self.assertIn(f"Edit(/{root}/autolab.toml)", s["permissions"]["deny"])
+        self.assertIn(f"Edit(//{root.lstrip('/')}/autolab.toml)", s["permissions"]["deny"])
         self.assertNotIn("sandbox", s)
         self.cfg.data["agents"]["sandbox"] = True
         project._write_settings(self.cfg)
         sb = read_json(self.root / ".claude" / "settings.json")["sandbox"]
         self.assertTrue(sb["enabled"] and sb["failIfUnavailable"] and not sb["allowUnsandboxedCommands"])
         self.assertIn(f"{root}/findings/**", sb["filesystem"]["denyWrite"])
-        self.assertIn("Bash(autolab:*)", sb["excludedCommands"])
+        self.assertIn("autolab *", sb["excludedCommands"])
 
     def test_human_config_protected(self):
         # agents must not raise their own budget/caps or grant themselves tools
@@ -1054,7 +1056,7 @@ class TickAndCli(unittest.TestCase):
         (self.cfg.layout.human / "STOP").unlink()
         guard.snapshot(self.cfg)
         write(self.cfg.layout.human / "GOAL.md", "# changed by the human\n")      # not in the log: no violation
-        self.assertEqual(guard.check(self.cfg, log)["violations"], [])
+        self.assertTrue(guard.check(self.cfg, log)["violations"])  # ambiguous edits require operator review
 
     def test_numerics_domain_requires_reference_and_timing(self):
         cfgf = self.root / "autolab.toml"
@@ -1400,6 +1402,9 @@ class ResearchSteering(unittest.TestCase):
             research.record_outcome(self.cfg, "E001", "valid", "supports", "continue", "slope 0.5")
         write(exp / "plan_amendments.md", "2026-10-17: analysis/analyze.py uses the median: heavy tails seen in "
                                           "the pilot, decided before reading the full results.\n")
+        from autolab.util import sha256_file
+        write(exp / "plan_amendments.md", f"2026-10-17 analysis/analyze.py {rec['files']['analysis/analyze.py']} "
+              f"{sha256_file(exp / 'analysis' / 'analyze.py')} reason: robust estimator for heavy tails\n")
         self.assertEqual(research.record_outcome(self.cfg, "E001", "valid", "supports", "continue", "slope 0.5")
                          ["hypothesis"], "supports")
         d = lambda tool, **inp: hooks.decide({"tool_name": tool, "tool_input": inp}, self.root)[0]

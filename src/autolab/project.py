@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -81,7 +82,12 @@ DENY = [
 
 # human-owned or gate-owned paths: Write/Edit tools denied; with the sandbox, writes from any Bash
 # program denied too (`autolab` commands, which run unsandboxed, are the sanctioned writers)
-PROTECTED_WRITE = ["autolab.toml", "CLAUDE.md", "findings/**", "state/DECISIONS.md", "00_human/**"]
+PROTECTED_WRITE = ["autolab.toml", "CLAUDE.md", ".claude/settings*.json", ".claude/agents/**",
+                   "findings/**", "state/DECISIONS.md", "00_human/**", "state/reviews/**",
+                   "state/budget.jsonl", "state/calls.jsonl", "experience/lessons.jsonl",
+                   "claims/*/reviews.json", "claims/*/gate.json", "experiments/*/plan_gate.json",
+                   "experiments/*/jobs*.jsonl", "experiments/*/evaluator.json", "experiments/*/outcome*.json*",
+                   "experiments/*/submission_pending.json", "**/*.lock", "**/*.lock/**", "state/pi_logs/**"]
 # network for sandboxed Bash (literature, packages, code hosting); extend in [agents] sandbox_domains
 SANDBOX_DOMAINS = ["arxiv.org", "export.arxiv.org", "api.crossref.org", "doi.org", "api.openalex.org",
                    "api.semanticscholar.org", "pypi.org", "files.pythonhosted.org", "github.com",
@@ -126,7 +132,7 @@ def _write_settings(cfg: Config) -> None:
                 "AUTOLAB_PYTHON": py,
                 "ARIS_REPO": (cfg.fw / "third_party" / "aris").as_posix(),
                 "PYTHONPATH": (cfg.fw / "src").as_posix(),
-                "AUTOLAB_WRITE_ROOTS": ":".join(_write_roots(cfg))},
+                "AUTOLAB_WRITE_ROOTS": os.pathsep.join(_write_roots(cfg))},
         # the framework (skills' tools, ARIS scripts) must be readable from the project;
         # the hook still refuses writes outside the project and AUTOLAB_WRITE_ROOTS
         # the project venv's interpreter is called by path, which `Bash(python:*)` does not
@@ -142,8 +148,9 @@ def _write_settings(cfg: Config) -> None:
     for k, v in agents_cfg.get("env", {}).items():
         settings["env"][k] = str(v).replace("{root}", root)
     # Write/Edit tools: human-owned files are denied outright (deny beats acceptEdits)
-    settings["permissions"]["deny"] = DENY + [f"Edit(/{root}/{p})" for p in PROTECTED_WRITE]
+    settings["permissions"]["deny"] = DENY + [f"Edit(//{root.lstrip('/')}/{p})" for p in PROTECTED_WRITE]
     if agents_cfg.get("sandbox"):
+        from autolab.guard import _dir
         # OS-level boundary for Bash and every program it starts (bubblewrap on Linux): the hook and
         # the allow list only filter command text, a script can still write anywhere the user can
         settings["sandbox"] = {
@@ -152,10 +159,10 @@ def _write_settings(cfg: Config) -> None:
             "allowUnsandboxedCommands": False,
             "autoAllowBashIfSandboxed": True,
             # `autolab` is the sanctioned writer of protected files; scheduler queries need the network
-            "excludedCommands": ["Bash(autolab:*)", "Bash(squeue:*)", "Bash(sacct:*)", "Bash(seff:*)",
-                                 "Bash(sinfo:*)"],
+            "excludedCommands": ["autolab *", "squeue *", "sacct *", "seff *", "sinfo *"],
             "filesystem": {"allowWrite": _write_roots(cfg),
-                           "denyWrite": [f"{root}/{p}" for p in PROTECTED_WRITE]},
+                           "denyRead": [str(_dir(cfg))],
+                           "denyWrite": [f"{root}/{p}" for p in PROTECTED_WRITE] + [str(_dir(cfg)), cfg.fw.as_posix()]},
             "network": {"allowedDomains": list(agents_cfg.get("sandbox_domains", SANDBOX_DOMAINS))},
         }
     write_json(cfg.layout.claude / "settings.json", settings)

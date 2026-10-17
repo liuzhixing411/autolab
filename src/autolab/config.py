@@ -30,6 +30,8 @@ DEFAULTS: dict[str, Any] = {
     },
     "reviewer": {
         "backend": "codex",
+        "billing": "api",              # subscription must be explicitly selected
+        "unknown_call_usd": 1.0,        # provisional estimate, not a provider-enforced cap
         # {model} {effort} {workdir} {out_file} are substituted; the prompt is fed on stdin.
         # The final message is read from {out_file} (falls back to stdout).
         "command": ["codex", "exec", "-m", "{model}", "-c", "model_reasoning_effort={effort}",

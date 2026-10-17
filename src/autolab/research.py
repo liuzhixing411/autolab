@@ -138,14 +138,23 @@ def evaluator_problems(cfg: Config, eid: str) -> tuple[list[str], list[str]]:
     exp = cfg.layout.experiments / eid
     rec = read_json(exp / "evaluator.json")
     if not rec:
+        if not (exp / "plan.md").is_file():
+            return ["experiment plan is missing"], []
+        meta, _ = read_frontmatter(exp / "plan.md")
+        if meta.get("analysis_command"):
+            return ["analysis_command has no frozen evaluator; register its scripts before running"], []
         return [], ["no frozen evaluator (plan has no analysis_command): the analysis was not fixed before the data"]
     amend = (exp / "plan_amendments.md").read_text(encoding="utf-8") if (exp / "plan_amendments.md").is_file() else ""
     probs = []
     for s, h in rec["files"].items():
         p = exp / s if (exp / s).is_file() else cfg.layout.root / s
         if not p.is_file() or sha256_file(p) != h:
-            if s not in amend:
-                probs.append(f"evaluator {s} changed after submission and plan_amendments.md does not explain it")
+            current = sha256_file(p) if p.is_file() else "missing"
+            # An amendment is valid for one exact transition, never all future edits.
+            if not any(s in line and h in line and current in line and "reason:" in line
+                       and line.split("reason:", 1)[1].strip() for line in amend.splitlines()):
+                probs.append(f"evaluator {s} changed: add a dated amendment naming {s}, old hash {h}, "
+                             f"new hash {current}, and reason: ...")
     return probs, []
 
 
@@ -154,6 +163,24 @@ def evaluator_problems(cfg: Config, eid: str) -> tuple[list[str], list[str]]:
 ENGINEERING = ("valid", "invalid")
 HYPOTHESIS = ("supports", "refutes", "inconclusive", "n/a")
 VALUE = ("continue", "refine", "pivot", "stop")
+
+
+def experiment_version(cfg: Config, eid: str) -> str:
+    """Bind an outcome to the run ledger, code (including shared sources), and results."""
+    import hashlib
+    import json
+    from autolab.gates import _code_hash
+    from autolab.slurm import clean_paths
+    from autolab.util import sha256_tree
+    exp = cfg.layout.experiments / eid
+    parts = {}
+    for rel in clean_paths(cfg, eid):
+        p = cfg.layout.root / rel
+        parts[rel] = _code_hash(p) if p.is_dir() else sha256_file(p) if p.is_file() else "missing"
+    for name in ("plan.md", "jobs.jsonl", "results"):
+        p = exp / name
+        parts[name] = sha256_tree(p) if p.exists() else "missing"
+    return hashlib.sha256(json.dumps(parts, sort_keys=True).encode()).hexdigest()
 
 
 def record_outcome(cfg: Config, eid: str, engineering: str, hypothesis: str, value: str, reason: str,
@@ -169,6 +196,19 @@ def record_outcome(cfg: Config, eid: str, engineering: str, hypothesis: str, val
         raise ValueError("an invalid run is not a reason to pivot or stop a direction: rerun or fix it (continue/refine)")
     if not reason.strip():
         raise ValueError("give the reason")
+    jobs = [r for r in read_jsonl(exp / "jobs.jsonl") if "submitted" in r]
+    latest = {j.get("part"): j for j in jobs}
+    if engineering == "valid":
+        finished = {r["job"]: r.get("state") for r in read_jsonl(exp / "jobs_usage.jsonl")}
+        if any(finished.get(j["job"]) != "COMPLETED" for j in latest.values()):
+            raise ValueError("valid outcome requires completed successful jobs; run tick to collect usage first")
+    from autolab.util import sha256_tree
+    evidence_hashes = {}
+    for e in evidence or []:
+        p = cfg.layout.root / e
+        if not p.exists():
+            raise ValueError(f"missing outcome evidence: {e}")
+        evidence_hashes[e] = sha256_tree(p)
     probs, warns = evaluator_problems(cfg, eid)
     if probs:
         raise ValueError("; ".join(probs))
@@ -179,6 +219,9 @@ def record_outcome(cfg: Config, eid: str, engineering: str, hypothesis: str, val
            "core_hours": core_hours(exp),
            "usd": usd, "warnings": warns,
            "jobs_seen": sum(1 for r in read_jsonl(exp / "jobs.jsonl") if "submitted" in r)}
+    rec["version"] = experiment_version(cfg, eid)
+    rec["evidence_hashes"] = evidence_hashes
+    rec["run_jobs"] = [j["job"] for j in latest.values()]
     with FileLock(exp / "outcome"):
         append_jsonl(exp / "outcomes.jsonl", rec)
         write_json(exp / "outcome.json", rec)

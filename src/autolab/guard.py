@@ -1,25 +1,13 @@
-"""Post-turn integrity check of protected files, run by the runner (outside the agents).
+"""Integrity snapshots and exact trusted-CLI mutation receipts, stored outside the project.
 
-The PreToolUse hook and the permission lists are best-effort filters: a program an agent runs
-(e.g. `python -c "Path('autolab.toml').write_text(...)"`) writes files without passing through
-them. The real boundary is OS-level (a separate account, a container, or Claude Code's sandbox:
-`[agents] sandbox = true`). This module adds detection: before a turn the runner snapshots the
-protected files (hashes, and copies of the configuration) outside the project; after the turn it
-lists protected files that changed and checks whether a tool call in the turn log touched them.
-
-- configuration (autolab.toml, .claude/settings*, .claude/agents/, CLAUDE.md) changed by a tool
-  call: restored from the snapshot, recorded, and the human is told;
-- findings/ changed without a matching `autolab gate claim`, state/DECISIONS.md rewritten instead of
-  appended, a locked plan or the human zone changed by a tool call: recorded, 00_human/STOP is
-  created and the human is asked to check (nothing is reverted automatically).
-Human edits do not appear in the turn log, so they are not flagged. Residual risks remain (a program
-that builds the path at run time, SLURM jobs running on compute nodes); see README "Safety model".
+Unexplained protected-file changes fail closed, even when their origin could be a human.
+The OS sandbox prevents agent subprocesses from accessing the receipt store; hooks are
+only a second layer. Cluster jobs still require deployment-level filesystem isolation.
 """
 
 from __future__ import annotations
 
 import hashlib
-import json
 import shutil
 from pathlib import Path
 
@@ -47,11 +35,16 @@ def protected(cfg: Config) -> dict[str, str]:
         files += list(cfg.layout.experiments.glob(f"*/{name}"))
     files += [cfg.layout.experience / "lessons.jsonl", cfg.layout.state / "calls.jsonl",
               cfg.layout.state / "budget.jsonl"]
+    files += list(cfg.layout.reviews.rglob("*"))
+    for pattern in ("*/plan_gate.json", "*/jobs.jsonl", "*/jobs_usage.jsonl", "*/submission_pending.json"):
+        files += list(cfg.layout.experiments.glob(pattern))
+    for pattern in ("*/reviews.json", "*/gate.json"):
+        files += list(cfg.layout.claims.glob(pattern))
     out = {}
     for p in files:
         if p.is_file():
             rel = p.relative_to(root).as_posix()
-            if rel not in HUMAN_WRITABLE and ".lock" not in rel:
+            if rel not in HUMAN_WRITABLE and ".lock" not in rel and not p.name.startswith(".tmp-"):
                 out[rel] = sha256_file(p)
     return out
 
@@ -69,46 +62,44 @@ def snapshot(cfg: Config) -> dict:
     snap = {"at": now_iso(), "hashes": hashes,
             "decisions": dec.read_text(encoding="utf-8") if dec.is_file() else ""}
     write_json(d / "snapshot.json", snap)
+    write_json(d / "authorized.json", {})
     return {"files": len(hashes)}
 
 
-def _tool_calls(log: Path) -> list[tuple[str, str]]:
-    """(tool, target text) for every write-capable tool call in a turn log."""
-    out = []
-    if not log or not log.is_file():
-        return out
-    for line in log.read_text(encoding="utf-8", errors="ignore").splitlines():
-        if '"tool_use"' not in line:
-            continue
-        try:
-            ev = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        for b in (ev.get("message") or {}).get("content") or []:
-            if isinstance(b, dict) and b.get("type") == "tool_use":
-                inp = b.get("input") or {}
-                if b.get("name") in ("Write", "Edit", "MultiEdit", "NotebookEdit"):
-                    out.append((b["name"], str(inp.get("file_path") or inp.get("notebook_path") or "")))
-                elif b.get("name") == "Bash":
-                    out.append(("Bash", str(inp.get("command", ""))))
-    return out
+def authorize_changes(cfg: Config, before: dict[str, str]) -> None:
+    """Record exact mutations of a completed trusted CLI invocation, outside the sandbox.
+
+    Never bless files unchanged by that invocation (they may have been altered earlier).
+    A later edit invalidates the receipt even if the log mentions a sanctioned command.
+    """
+    from autolab.util import FileLock
+    d = _dir(cfg)
+    if not (d / "snapshot.json").is_file():
+        return
+    after = protected(cfg)
+    with FileLock(d / "authorized"):
+        approved = read_json(d / "authorized.json", {}) or {}
+        for rel in set(before) | set(after):
+            if before.get(rel) != after.get(rel):
+                approved[rel] = after.get(rel)
+        write_json(d / "authorized.json", approved)
 
 
-def _touched(rel: str, calls: list[tuple[str, str]]) -> bool:
-    for tool, target in calls:
-        if tool == "Bash":
-            cmd = target.strip()
-            if cmd.startswith("autolab ") or cmd.startswith("autolab\t"):
-                continue                       # the sanctioned interface
-            if rel in cmd or (rel.startswith("00_human/") and "00_human" in cmd and Path(rel).name in cmd):
-                return True
-        elif target.endswith(rel):
-            return True
-    return False
-
-
-def _gate_ran(calls: list[tuple[str, str]]) -> bool:
-    return any(t == "Bash" and "autolab gate claim" in c for t, c in calls)
+def require_trusted_records(cfg: Config, paths: list[Path] | None = None) -> None:
+    """During an unattended turn, do not consume unreceipted approvals or ledgers."""
+    snap = read_json(_dir(cfg) / "snapshot.json")
+    if not snap:
+        return
+    from autolab.hooks import CLI_OWNED
+    approved = read_json(_dir(cfg) / "authorized.json", {}) or {}
+    expected = {**snap["hashes"], **approved}
+    current = protected(cfg)
+    selected = {p.relative_to(cfg.layout.root).as_posix() for p in paths} if paths is not None else None
+    bad = [p for p in set(expected) | set(current) if CLI_OWNED.match(p)
+           and (selected is None or p in selected)
+           and expected.get(p) != current.get(p)]
+    if bad:
+        raise RuntimeError("untrusted control records changed: " + ", ".join(sorted(bad)))
 
 
 def check(cfg: Config, log: Path | None) -> dict:
@@ -116,22 +107,21 @@ def check(cfg: Config, log: Path | None) -> dict:
     snap = read_json(d / "snapshot.json")
     if not snap:
         return {"checked": False, "why": "no snapshot"}
+    approved = read_json(d / "authorized.json", {}) or {}
     before, after = snap["hashes"], protected(cfg)
     changed = sorted(k for k in set(before) | set(after) if before.get(k) != after.get(k))
-    calls = _tool_calls(log) if log else []
     violations, restored = [], []
     for rel in changed:
+        if rel in approved and approved[rel] == after.get(rel):
+            continue
         if rel == "state/DECISIONS.md":
             now = (cfg.layout.root / rel).read_text(encoding="utf-8") if (cfg.layout.root / rel).is_file() else ""
             if not now.startswith(snap.get("decisions", "")):
                 violations.append({"file": rel, "kind": "decision log rewritten (append-only)"})
             continue
         if rel.startswith("findings/"):
-            if not _gate_ran(calls) or _touched(rel, calls):
-                violations.append({"file": rel, "kind": "findings changed outside `autolab gate claim`"})
+            violations.append({"file": rel, "kind": "findings changed without a trusted mutation receipt"})
             continue
-        if not _touched(rel, calls):
-            continue                           # e.g. the human edited it during the turn
         if rel in CONFIG or rel.startswith(".claude/agents/"):
             src = d / "copies" / rel
             if src.is_file():
@@ -139,7 +129,7 @@ def check(cfg: Config, log: Path | None) -> dict:
                 restored.append(rel)
             violations.append({"file": rel, "kind": "configuration changed by a tool call (restored)"})
         else:
-            violations.append({"file": rel, "kind": "protected file changed by a tool call"})
+            violations.append({"file": rel, "kind": "protected file changed without a trusted mutation receipt"})
     res = {"checked": True, "changed": changed, "violations": violations, "restored": restored}
     if violations:
         from autolab.human import request_action

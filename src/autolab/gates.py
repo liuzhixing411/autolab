@@ -61,6 +61,13 @@ def fingerprint(cfg: Config, cid: str) -> dict:
         plan = exp / "plan.md"
         parts[f"plan:{eid}"] = gate.get("plan_hash") or (sha256_file(plan) if plan.is_file() else "missing")
         parts[f"code:{eid}"] = _code_hash(exp) if exp.is_dir() else "missing"
+        from autolab.slurm import clean_paths
+        for rel in clean_paths(cfg, eid):
+            path = cfg.layout.root / rel
+            parts[f"dependency:{rel}"] = (_code_hash(path) if path.is_dir() else
+                                           sha256_file(path) if path.is_file() else "missing")
+        outcome = exp / "outcome.json"
+        parts[f"outcome:{eid}"] = sha256_file(outcome) if outcome.is_file() else "missing"
     fp = hashlib.sha256(json.dumps(parts, sort_keys=True).encode()).hexdigest()
     return {"fingerprint": fp, "parts": parts}
 
@@ -88,7 +95,10 @@ def worse(a: str, b: str) -> str:
 
 
 def _reviews(cfg: Config, cdir: Path) -> list[dict]:
+    from autolab import guard
+    guard.require_trusted_records(cfg, [cdir / "reviews.json"])
     ids = read_json(cdir / "reviews.json", []) or []
+    guard.require_trusted_records(cfg, [cfg.layout.reviews / f"{rid}.json" for rid in ids])
     out = []
     for rid in ids:
         rec = read_json(cfg.layout.reviews / f"{rid}.json")
@@ -121,6 +131,22 @@ def precheck(cfg: Config, cid: str) -> dict:
     for eid in meta.get("experiments", []):
         if not plan_gate_passed(cfg, eid):
             problems.append(f"experiment {eid} has no passing plan gate (plan not pre-registered with context)")
+        from autolab import research
+        exp = cfg.layout.experiments / eid
+        from autolab import guard
+        guard.require_trusted_records(cfg, [exp / "outcome.json", exp / "evaluator.json",
+                                            exp / "jobs.jsonl", exp / "jobs_usage.jsonl"])
+        outcome = read_json(exp / "outcome.json", {}) or {}
+        if outcome.get("engineering") != "valid":
+            problems.append(f"experiment {eid} needs a valid engineering outcome")
+        elif outcome.get("version") != research.experiment_version(cfg, eid):
+            problems.append(f"experiment {eid} outcome is stale: record an outcome for the current code, run and evidence")
+        for rel, digest in outcome.get("evidence_hashes", {}).items():
+            path = cfg.layout.root / rel
+            if not path.exists() or sha256_tree(path) != digest:
+                problems.append(f"experiment {eid} outcome evidence changed: {rel}")
+        ep, _ = research.evaluator_problems(cfg, eid)
+        problems.extend(f"experiment {eid}: {p}" for p in ep)
     required = cfg.domain.get("validation", {}).get("required_evidence", [])
     given = meta.get("validation", {})
     for name in required:
@@ -176,6 +202,10 @@ def _claim_gate(cfg: Config, cid: str) -> dict:
     elif last.get("verdict") != "yes" or last.get("grade") not in GRADES:
         decision = "needs_review"
         reasons.append(f"unusable review verdict={last.get('verdict')} grade={last.get('grade')}")
+    elif last.get("unverified") or any(i.get("severity") in ("critical", "major")
+                                      for i in last.get("issues", []) if isinstance(i, dict)):
+        decision = "needs_work"
+        reasons.append("review has unverified claims or unresolved critical/major issues")
     else:
         combined = worse(meta["pi_grade"], last["grade"])
         split = abs(GRADES.index(meta["pi_grade"]) - GRADES.index(last["grade"]))

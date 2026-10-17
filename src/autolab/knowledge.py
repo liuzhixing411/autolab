@@ -451,6 +451,8 @@ def _check_candidates(cfg: Config, eid: str, meta: dict, body: str,
 
 def plan_gate_passed(cfg: Config, eid: str) -> bool:
     exp = cfg.layout.experiments / eid
+    from autolab import guard
+    guard.require_trusted_records(cfg, [exp / "plan_gate.json"])
     res = read_json(exp / "plan_gate.json")
     return bool(res and res.get("ok") and (exp / "plan.md").is_file()
                 and res.get("plan_hash") == sha256_tree(exp / "plan.md"))

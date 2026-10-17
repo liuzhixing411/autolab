@@ -10,6 +10,15 @@ while [ $# -gt 0 ]; do case "$1" in
   *) echo "unknown option $1"; exit 2 ;; esac; shift; done
 source "$(dirname "$(readlink -f "$0")")/env.sh"
 cd "$PROJECT"
+# One runner owns the turn budget and integrity snapshot. Never steal a stale lock.
+mkdir state/runner.lock 2>/dev/null || { echo "Runner lock exists; check the other runner before recovery"; exit 5; }
+trap 'rmdir state/runner.lock' EXIT
+if ! PYTHONPATH="$AUTOLAB_HOME/src" "$AUTOLAB_PYTHON" -c 'from autolab.config import Config; from pathlib import Path; import sys; sys.exit(0 if Config(Path.cwd())["agents"].get("sandbox") else 1)'; then
+  echo "Unattended runs require [agents] sandbox = true and an available OS sandbox"; exit 5
+fi
+# Regenerate the current protection rules before handing control to an agent.
+autolab guard snapshot >/dev/null || exit 5
+autolab skills mount >/dev/null || exit 5
 MODEL="$("$AUTOLAB_PYTHON" -c 'import tomllib;print(tomllib.load(open("autolab.toml","rb"))["models"]["pi"])')"
 # The PI dispatches students in the background and reacts as each reports. By default `claude -p`
 # stops background tasks 10 min after the PI's last message (seen: a student cut off before
@@ -44,16 +53,16 @@ while true; do
   # ScheduleWakeup 1800 s stalled the loop). One turn = one process that ends.
   # hard wall-clock limit per turn (default 60 min) so a stuck session cannot block the loop
   # SIGINT first: it ends the turn, while SIGTERM records no result (cost would be unknown)
-  autolab guard snapshot >/dev/null 2>&1 || true
+  autolab guard snapshot >/dev/null || { echo "Integrity snapshot failed; stopping"; exit 5; }
   timeout --signal=INT --kill-after=120 "${PI_TURN_TIMEOUT:-3600}" \
     claude -p "$PROMPT" --model "$MODEL" --permission-mode acceptEdits --max-turns "$MAXTURNS" "${CAPARG[@]}" \
          --disallowedTools "ScheduleWakeup,CronCreate,CronDelete,CronList,Monitor,RemoteTrigger" \
          --output-format stream-json --verbose > "$LOG" 2> "state/pi_logs/$TS.err"
   RC=$?                                  # 124 = turn hit the time limit
   [ "$RC" = 124 ] && echo "$(date -Is) turn exceeded ${PI_TURN_TIMEOUT:-3600}s and was stopped" >> state/pi_logs/runner-loop.out
-  autolab budget record "$LOG" >/dev/null || true
+  autolab budget record "$LOG" >/dev/null || { echo "Cost recording failed; stopping"; touch 00_human/STOP; exit 5; }
   # protected files changed by a tool call this turn? (restores config, else STOP + ask the human)
-  autolab guard check "$LOG" >> state/pi_logs/runner-loop.out 2>&1 || true
+  autolab guard check "$LOG" >> state/pi_logs/runner-loop.out 2>&1 || { echo "Integrity check failed; stopping"; touch 00_human/STOP; exit 5; }
   autolab wake mark >/dev/null 2>&1 || true
   printf '{"ts":"%s","rc":%d,"seconds":%d,"log":"%s","model":"%s"}\n' "$TS" "$RC" "$(( $(date +%s)-T0 ))" "$LOG" "$MODEL" >> state/pi_runs.jsonl
   printf '{"state":"idle","host":"%s","last_rc":%d,"last_log":"%s","finished":"%s"}\n' "$(hostname)" "$RC" "$LOG" "$(date -Is)" > state/pi_status.json

@@ -166,6 +166,7 @@ def run(cfg: Config, task: str, files: list[Path], instructions: str = "",
         cmd = [c.format(model=r["model"], effort=r["effort"], workdir=str(root), out_file=str(out_file))
                for c in cfg["reviewer"]["command"]]
         from autolab import budget
+        budget.reserve_review(cfg, rid, r["model"])
         t0 = time.time()
         try:
             proc = subprocess.run(cmd, input=prompt, capture_output=True, text=True,
@@ -195,10 +196,10 @@ def run(cfg: Config, task: str, files: list[Path], instructions: str = "",
     if subject:
         record["subject"] = subject
     usd = float(cfg["reviewer"].get("usd_per_call", 0) or 0)
-    if usd or backend != "mock":
+    if usd and backend == "mock":
         from autolab import budget
         budget.record_cost(cfg, "review", usd if usd else None, {"review": rid, "model": r["model"]},
-                           known=bool(usd) or backend == "codex")
+                           known=True)
     write_new(out_dir / f"{rid}.prompt.md", prompt)          # review records are never overwritten
     write_new(out_dir / f"{rid}.raw.md", raw)
     write_new(out_dir / f"{rid}.json", json.dumps(record, indent=2, ensure_ascii=False) + "\n")

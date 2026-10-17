@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import subprocess
 import sys
 from pathlib import Path
 
@@ -287,6 +288,9 @@ def cmd_guard(a):
         return 0
     from autolab.util import now_iso
     res = guard.check(cfg, Path(a.log) if a.log else None)
+    if not res.get("checked"):
+        print("guard: no valid snapshot; refusing to continue", file=sys.stderr)
+        return 5
     if res.get("violations"):
         print(f"{now_iso()} guard: {len(res['violations'])} violation(s): "
               + "; ".join(f"{v['file']}: {v['kind']}" for v in res["violations"]))
@@ -491,8 +495,16 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     try:
-        rc = args.fn(args)
-    except (FileNotFoundError, FileExistsError, ValueError, RuntimeError, KeyError) as e:
+        from autolab import guard
+        track = args.cmd not in ("init", "hook", "guard")
+        cfg = _cfg(args) if track else None
+        before = guard.protected(cfg) if cfg else {}
+        try:
+            rc = args.fn(args)
+        finally:
+            if cfg:
+                guard.authorize_changes(cfg, before)
+    except (OSError, subprocess.TimeoutExpired, ValueError, RuntimeError, KeyError) as e:
         print(f"autolab: {e}", file=sys.stderr)
         return 1
     return int(rc or 0)

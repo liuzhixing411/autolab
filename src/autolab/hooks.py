@@ -29,9 +29,11 @@ HUMAN_CONFIG = ("autolab.toml", ".claude/settings", ".claude/agents/", "CLAUDE.m
 # written only through `autolab decide`, so past decisions cannot be rewritten after the fact
 APPEND_ONLY = ("state/DECISIONS.md",)
 # records only autolab commands write: the frozen evaluator, outcomes, lessons, spend and call logs
-CLI_OWNED = re.compile(r"^(experiments/[^/]+/(evaluator\.json|outcomes?\.jsonl?|outcome\.json)|"
+CLI_OWNED = re.compile(r"^(experiments/[^/]+/(evaluator\.json|outcomes?\.jsonl?|outcome\.json|submission_pending\.json|plan_gate\.json|jobs(?:_usage)?\.jsonl)|"
+                       r"claims/[^/]+/(reviews|gate)\.json|state/reviews/.*|"
                        r"experience/lessons\.jsonl|state/(calls|budget)\.jsonl)$")
-_CLI_OWNED_TEXT = ("evaluator.json", "outcome.json", "outcomes.jsonl", "lessons.jsonl", "calls.jsonl", "budget.jsonl")
+_CLI_OWNED_TEXT = ("evaluator.json", "outcome.json", "outcomes.jsonl", "lessons.jsonl", "calls.jsonl", "budget.jsonl",
+                   "plan_gate.json", "jobs.jsonl", "jobs_usage.jsonl", "submission_pending.json", "reviews.json", "state/reviews/")
 _AUTOLAB_CMD = re.compile(r"^\s*(autolab|python3?\s+-m\s+autolab|\S*python\S*\s+-m\s+autolab)\b")
 _RAW_SLURM = re.compile(r"(^|[;&|`(]\s*|\s)(sbatch|scancel)\b")
 _SEGMENT_SPLIT = re.compile(r"&&|\|\||;|\||\n")
@@ -137,7 +139,7 @@ def decide(event: dict, root: Path) -> tuple[bool, str]:
         rel = _rel(target, root)
         if rel is None:
             import os
-            roots = [r for r in os.environ.get("AUTOLAB_WRITE_ROOTS", "/tmp").split(":") if r]
+            roots = [r for r in os.environ.get("AUTOLAB_WRITE_ROOTS", "/tmp").split(os.pathsep) if r]
             try:
                 p = Path(target).expanduser().resolve()
             except OSError:
@@ -151,6 +153,8 @@ def decide(event: dict, root: Path) -> tuple[bool, str]:
                            "(`autolab human request`) and acknowledgements via `autolab human ack`.")
         if rel.startswith("findings/"):
             return False, "findings/ is written only by `autolab gate claim <C-id>`."
+        if any(p.endswith(".lock") for p in Path(rel).parts) or rel.startswith("state/pi_logs/"):
+            return False, "Lock ownership and runner logs are not agent-writable."
         if rel.startswith(".claude/skills/"):
             return False, "Mounted skills are generated. Edit core/ or domain overlays, then `autolab skills mount`."
         if any(rel == p or rel.startswith(p) for p in HUMAN_CONFIG):
@@ -171,6 +175,21 @@ def decide(event: dict, root: Path) -> tuple[bool, str]:
     if tool == "Bash":
         cmd = inp.get("command", "")
         if _AUTOLAB_CMD.match(cmd):
+            # A prefix is not an authorization for the rest of a shell program.
+            plain = re.sub(r"'[^']*'|\"(?:[^\"\\]|\\.)*\"", " _Q_ ", cmd)
+            if re.search(r"[;&|<>\n\r]", plain) or "$(" in cmd or "`" in cmd:
+                return False, "Run autolab as one command without chaining, redirection or shell substitution."
+            import shlex
+            try:
+                args = shlex.split(cmd)
+            except ValueError:
+                return False, "Invalid command quoting."
+            command = args[1:] if args[0] == "autolab" else args[args.index("-m") + 2:]
+            # Runner/operator controls must not be invoked by the agent being checked.
+            if (command and command[0] in ("init", "guard")) or "--project" in command or any(a.startswith("--project=") for a in command):
+                return False, "Project initialization, project switching and integrity controls belong to the operator."
+            if command[:2] == ["budget", "record"]:
+                return False, "Only the runner records API costs."
             return True, ""
         # blank out quoted text first: a `;` or "sbatch" inside a commit message is not a command
         unquoted = re.sub(r"'[^']*'|\"(?:[^\"\\]|\\.)*\"", " _Q_ ", cmd)

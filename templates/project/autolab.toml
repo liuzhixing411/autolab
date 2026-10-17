@@ -17,6 +17,8 @@ student_writing = "sonnet"
 
 [reviewer]
 backend = "codex"                # codex | command (any CLI, see command below) | mock (tests only, fake reviews)
+billing = "api"                  # api | subscription; never inferred from the CLI name
+unknown_call_usd = 1.0            # provisional charge when actual API cost is unavailable
 # command = ["codex", "exec", "-m", "{model}", "-c", "model_reasoning_effort={effort}", "--sandbox", "read-only",
 #            "--skip-git-repo-check", "-C", "{workdir}", "-o", "{out_file}", "-"]   # the default; prompt arrives on stdin
 # Tiers by difficulty. light = non-verdict checks only. Models your Codex account offers: ~/.codex/models_cache.json
@@ -65,6 +67,6 @@ allow_bash = []                  # e.g. ["make", "gcc", "mpicc"]
 env = {}                         # e.g. { BASILISK = "{root}/tools/basilisk/src" }
 # OS-level sandbox for Bash and the programs it starts (bubblewrap on Linux): writes to autolab.toml,
 # CLAUDE.md, findings/, state/DECISIONS.md and 00_human/ are blocked, network limited to sandbox_domains.
-# Test with `autolab doctor` and one --once turn before an unattended run.
+# Required by run_pi.sh. Enable and test the OS sandbox on the execution host before an unattended run.
 sandbox = false
 # sandbox_domains = ["arxiv.org", "api.crossref.org", "pypi.org", "files.pythonhosted.org", "github.com"]

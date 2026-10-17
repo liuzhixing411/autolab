@@ -7,8 +7,8 @@ reached. With a subscription login this figure is Claude Code's estimate, not an
 A turn that ends without a result event (killed by the time limit, crashed) used to be booked as
 0 USD. Now its token usage is recorded and the cost is booked as *unknown*: status() charges it
 provisionally (`budget.unknown_turn_usd`, default: the most expensive known turn) and lists it for
-reconciliation. Reviewer calls are recorded too (`reviewer.usd_per_call`; 0 on a subscription
-login, where they are not billed per call). Before a turn the runner requires the remaining budget
+reconciliation. Reviewer calls are reserved before execution. API billing is the default; unknown cost
+is charged provisionally. Subscription billing must be explicitly configured. Before a turn the runner requires the remaining budget
 to cover a reserve and caps the turn itself with `claude -p --max-budget-usd`.
 """
 
@@ -63,6 +63,33 @@ def record_turn(cfg: Config, log: Path, source: str = "pi_turn") -> dict:
     record_call(cfg, source, info["status"], sorted(usage), usage, cost, info["duration_s"], str(log),
                 info["error"], {"num_turns": info["num_turns"], "subtype": info.get("subtype")})
     return record_cost(cfg, source, cost, {"log": str(log), "usage": usage}, known=cost is not None)
+
+
+def reserve_review(cfg: Config, rid: str, model: str) -> dict:
+    """Check and book the call before starting it; errors/timeouts keep their reservation.
+
+    Fixed per-call pricing is explicit. Otherwise API calls remain unknown and receive a
+    provisional charge. A CLI name never implies subscription billing.
+    """
+    fixed = float(cfg["reviewer"].get("usd_per_call", 0) or 0)
+    mode = cfg["reviewer"].get("billing", "api")
+    if mode not in ("api", "subscription") or fixed < 0:
+        raise ValueError("reviewer.billing must be api or subscription; usd_per_call must be nonnegative")
+    known = fixed > 0 or mode == "subscription"
+    charge = fixed if known else float(cfg["reviewer"].get("unknown_call_usd") or 1.0)
+    if charge < 0:
+        raise ValueError("unknown_call_usd must be positive")
+    with FileLock(_ledger(cfg)):
+        st = status(cfg)
+        if st["cap_usd"] and st["spent_usd"] + charge > st["cap_usd"]:
+            raise RuntimeError("API budget cannot cover this reviewer call")
+        rec = {"at": now_iso(), "source": "review", "usd": fixed if known else 0.0,
+               "cost_reported": False, "review": rid, "model": model, "billing": mode,
+               "estimated": True}
+        if not known:
+            rec["unknown"] = True
+        append_jsonl(_ledger(cfg), rec)
+        return rec
 
 
 def status(cfg: Config, reserve: bool = False) -> dict:

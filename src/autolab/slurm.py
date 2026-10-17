@@ -18,7 +18,7 @@ from pathlib import Path
 from autolab.config import Config
 from autolab.human import stopped
 from autolab.knowledge import plan_gate_passed
-from autolab.util import FileLock, append_jsonl, now_iso, read_frontmatter, read_jsonl, write_atomic
+from autolab.util import FileLock, append_jsonl, now_iso, read_frontmatter, read_json, read_jsonl, write_atomic, write_json
 
 TERMINAL = {"COMPLETED", "FAILED", "CANCELLED", "TIMEOUT", "OUT_OF_MEMORY", "NODE_FAIL",
             "PREEMPTED", "BOOT_FAIL", "DEADLINE"}
@@ -222,7 +222,7 @@ def render(cfg: Config, eid: str, part: str | None = None) -> tuple[Path, dict]:
 
 def validate(cfg: Config, eid: str, part: str | None = None) -> dict:
     path, r = render(cfg, eid, part)
-    proc = subprocess.run([_exe("sbatch"), "--test-only", str(path)], capture_output=True, text=True)
+    proc = subprocess.run([_exe("sbatch"), "--test-only", str(path)], capture_output=True, text=True, timeout=60)
     # sbatch --test-only reports on stderr and exits 0 when the job would be accepted
     out = {"ok": proc.returncode == 0, "script": str(path), "billed_cpus": r["billed_cpus"],
            "core_hours_max": round(r["billed_cpus"] * r["hours"] * r["array_size"], 1),
@@ -248,7 +248,7 @@ def uncommitted_code(root: Path, paths: list[str]) -> list[str] | None:
     if not existing:
         return []
     proc = subprocess.run(["git", "-C", str(root), "status", "--porcelain", "--untracked-files=all", "--", *existing],
-                          capture_output=True, text=True)
+                          capture_output=True, text=True, timeout=60)
     out = []
     for line in proc.stdout.splitlines():
         f = line[3:].strip().strip('"').split(" -> ")[-1]
@@ -267,6 +267,18 @@ def clean_paths(cfg: Config, eid: str) -> list[str]:
 
 
 def submit(cfg: Config, eid: str, part: str | None = None) -> dict:
+    with FileLock(cfg.layout.state / "slurm_submit"):
+        return _submit_locked(cfg, eid, part)
+
+
+def _submit_locked(cfg: Config, eid: str, part: str | None = None) -> dict:
+    from autolab import guard
+    guard.require_trusted_records(cfg, list(cfg.layout.experiments.glob("*/jobs.jsonl")) +
+                                  [cfg.layout.experiments / eid / "jobs.jsonl"] +
+                                  list(cfg.layout.experiments.glob("*/submission_pending.json")))
+    pending = cfg.layout.experiments / eid / "submission_pending.json"
+    if pending.exists():
+        raise RuntimeError(f"{eid}: prior submission outcome is uncertain; reconcile submission_pending.json with the scheduler before retrying")
     if stopped(cfg):
         raise RuntimeError("00_human/STOP exists; not submitting")
     if not cfg.layout.ready.exists():
@@ -294,24 +306,30 @@ def submit(cfg: Config, eid: str, part: str | None = None) -> dict:
     path, r = render(cfg, eid, part)
     cap =float(cfg["slurm"].get("total_core_hours") or 0)
     request = r["billed_cpus"] * r["hours"] * r["array_size"]
-    # check and reserve in one step: concurrent submits used to pass the cap together
-    with FileLock(cfg.layout.state / "slurm_submit"):
-        if cap:
-            c = committed_core_hours(cfg)
-            if c["committed"] + request > cap:
-                raise RuntimeError(f"core-hour cap: used {c['used']:.1f} + reserved for unfinished jobs "
-                                   f"{c['reserved']:.1f} + this job up to {request:.1f} > {cap:.0f} "
-                                   "(slurm.total_core_hours); ask the human to raise it")
-        proc = subprocess.run([_exe("sbatch"), "--parsable", str(path)], capture_output=True, text=True)
-        if proc.returncode != 0:
-            raise RuntimeError(f"sbatch failed: {proc.stderr.strip()}")
-        job = proc.stdout.strip().split(";")[0]
-        rec = {"job": job, "eid": eid, "part": part, "submitted": now_iso(), "script": str(path),
-               "resources": {k: r[k] for k in ("partition", "qos", "nodes", "ntasks", "cpus", "total_cpus",
-                                               "billed_cpus", "mem_gb", "hours", "gpus", "array", "array_size")}}
-        if r.get("override"):
-            rec["override"] = r["override"]
-        append_jsonl(cfg.layout.experiments / eid / "jobs.jsonl", rec)
+    if cap:
+        c = committed_core_hours(cfg)
+        if c["committed"] + request > cap:
+            raise RuntimeError(f"core-hour cap: used {c['used']:.1f} + reserved for unfinished jobs "
+                               f"{c['reserved']:.1f} + this job up to {request:.1f} > {cap:.0f} "
+                               "(slurm.total_core_hours); ask the human to raise it")
+    exe = _exe("sbatch")
+    write_json(pending, {"eid": eid, "part": part, "created": now_iso(), "resources": r})
+    # If the process times out or the ledger write fails, keep the reservation. Retrying
+    # blindly could submit twice after the scheduler accepted the first request.
+    proc = subprocess.run([exe, "--parsable", str(path)], capture_output=True, text=True, timeout=60)
+    if proc.returncode != 0:
+        pending.unlink()
+        raise RuntimeError(f"sbatch failed: {proc.stderr.strip()}")
+    job = proc.stdout.strip().split(";")[0]
+    if not job.isdigit():
+        raise RuntimeError("sbatch returned no valid job id; reconcile submission_pending.json before retrying")
+    rec = {"job": job, "eid": eid, "part": part, "submitted": now_iso(), "script": str(path),
+           "resources": {k: r[k] for k in ("partition", "qos", "nodes", "ntasks", "cpus", "total_cpus",
+                                           "billed_cpus", "mem_gb", "hours", "gpus", "array", "array_size")}}
+    if r.get("override"):
+        rec["override"] = r["override"]
+    append_jsonl(cfg.layout.experiments / eid / "jobs.jsonl", rec)
+    pending.unlink()
     for k in ("warning", "warning_cpus"):
         if r.get(k):
             rec = {**rec, k: r[k]}
@@ -324,10 +342,14 @@ def committed_core_hours(cfg: Config) -> dict:
     claimed its share; counting only `used` let two 6 core-hour jobs pass a 10 core-hour cap."""
     recs = [r for e in sorted(cfg.layout.experiments.glob("E*"))
             for r in read_jsonl(e / "jobs.jsonl") if "submitted" in r]
+    uncertain = 0.0
+    for p in cfg.layout.experiments.glob("*/submission_pending.json"):
+        r = read_json(p)["resources"]
+        uncertain += float(r["billed_cpus"]) * float(r["hours"]) * int(r["array_size"])
     if not recs:
-        return {"used": 0.0, "reserved": 0.0, "committed": 0.0}
+        return {"used": 0.0, "reserved": uncertain, "committed": uncertain}
     proc = subprocess.run([_exe("sacct"), "-j", ",".join(r["job"] for r in recs), "-X", "-n", "-P",
-                           "-o", "JobID,State,CPUTimeRAW"], capture_output=True, text=True)
+                           "-o", "JobID,State,CPUTimeRAW"], capture_output=True, text=True, timeout=60)
     cpu: dict[str, float] = {}
     states: dict[str, list[str]] = {}
     for line in proc.stdout.splitlines():
@@ -337,7 +359,7 @@ def committed_core_hours(cfg: Config) -> dict:
         base = f[0].split("_")[0].split(".")[0]
         cpu[base] = cpu.get(base, 0.0) + (int(f[2]) / 3600 if f[2].isdigit() else 0.0)
         states.setdefault(base, []).append(f[1].split()[0] if f[1] else "UNKNOWN")
-    used = reserved = 0.0
+    used, reserved = 0.0, uncertain
     for r in recs:
         st = states.get(r["job"], ["PENDING"])
         done = all(s in TERMINAL for s in st)
@@ -357,7 +379,7 @@ def core_hours_used(cfg: Config) -> float:
     if not jobs:
         return 0.0
     proc = subprocess.run([_exe("sacct"), "-j", ",".join(jobs), "-X", "-n", "-P", "-o", "JobID,CPUTimeRAW"],
-                          capture_output=True, text=True)
+                          capture_output=True, text=True, timeout=60)
     total = 0.0
     for line in proc.stdout.splitlines():
         parts = line.strip().split("|")
@@ -373,7 +395,7 @@ def cancel(cfg: Config, eid: str, job: str | None = None) -> list[str]:
     for j in targets:
         if j not in recorded:
             raise ValueError(f"job {j} was not submitted for {eid}; refusing to cancel it")
-        proc = subprocess.run([_exe("scancel"), j], capture_output=True, text=True)
+        proc = subprocess.run([_exe("scancel"), j], capture_output=True, text=True, timeout=60)
         if proc.returncode != 0:
             raise RuntimeError(f"scancel {j} failed: {proc.stderr.strip()}")
         append_jsonl(cfg.layout.experiments / eid / "jobs.jsonl",
@@ -385,10 +407,10 @@ def job_state(job: str) -> str:
     """State of a job; for a job array, one state for the whole array: RUNNING/PENDING while any
     task is unfinished, COMPLETED when all completed, else the first failure state."""
     proc = subprocess.run([_exe("sacct"), "-j", job, "-n", "-P", "-X", "-o", "State"],
-                          capture_output=True, text=True)
+                          capture_output=True, text=True, timeout=60)
     states = [ln.split()[0] for ln in proc.stdout.splitlines() if ln.strip()]
     if not states:
-        q = subprocess.run([_exe("squeue"), "-j", job, "-h", "-o", "%T"], capture_output=True, text=True)
+        q = subprocess.run([_exe("squeue"), "-j", job, "-h", "-o", "%T"], capture_output=True, text=True, timeout=60)
         states = [ln.strip() for ln in q.stdout.splitlines() if ln.strip()] or ["UNKNOWN"]
     if len(states) == 1:
         return states[0]
@@ -426,7 +448,7 @@ def usage(job: str) -> dict:
     """What a finished job really used (like `seff`), from sacct: CPU efficiency and peak memory,
     so the next request can be sized from data instead of guesses."""
     proc = subprocess.run([_exe("sacct"), "-j", job, "-n", "-P", "-o",
-                           "JobID,ElapsedRaw,TotalCPU,AllocCPUS,MaxRSS,ReqMem"], capture_output=True, text=True)
+                           "JobID,ElapsedRaw,TotalCPU,AllocCPUS,MaxRSS,ReqMem"], capture_output=True, text=True, timeout=60)
     cpu_used = cpu_alloc = elapsed = 0.0
     rss = req = 0.0
     tasks = 0

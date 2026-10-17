@@ -127,11 +127,15 @@ _ID_PREFIX = {"experiment": "E", "claim": "C", "finding": "F", "task": "T",
 
 class FileLock:
     """Cross-process lock: mkdir is atomic on local, NFS and GPFS file systems (flock is not
-    reliable across login nodes). A lock older than `stale_s` is taken over (crashed holder)."""
+    reliable across login nodes). Never steal a lock merely because it is old: a slow
+    scheduler or filesystem operation may still own it. Abandoned locks require operator
+    recovery after checking that the holder has exited."""
 
     def __init__(self, path: Path, timeout_s: float = 60.0, stale_s: float = 300.0):
         self.dir = Path(str(path) + ".lock")
         self.timeout_s, self.stale_s = timeout_s, stale_s
+        import uuid
+        self.token = uuid.uuid4().hex
 
     def __enter__(self):
         import time
@@ -140,12 +144,12 @@ class FileLock:
         while True:
             try:
                 os.mkdir(self.dir)
+                write_json(self.dir / "owner.json", {"token": self.token, "pid": os.getpid(),
+                                                     "created": now_iso()})
                 return self
             except FileExistsError:
                 try:
-                    if time.time() - self.dir.stat().st_mtime > self.stale_s:
-                        os.rmdir(self.dir)
-                        continue
+                    self.dir.stat()
                 except FileNotFoundError:
                     continue
                 if time.time() - start > self.timeout_s:
@@ -154,7 +158,10 @@ class FileLock:
 
     def __exit__(self, *exc):
         try:
-            os.rmdir(self.dir)
+            owner = self.dir / "owner.json"
+            if (read_json(owner, {}) or {}).get("token") == self.token:
+                owner.unlink()
+                os.rmdir(self.dir)
         except FileNotFoundError:
             pass
         return False
