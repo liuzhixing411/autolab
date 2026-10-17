@@ -44,6 +44,11 @@ def cmd_tick(a):
     _out(tick.run(_cfg(a)))
 
 
+def cmd_weixin(a):
+    from autolab import weixin
+    weixin.run(_cfg(a), a.action)
+
+
 def cmd_skills(a):
     from autolab import project, skills
     cfg = _cfg(a)
@@ -80,6 +85,8 @@ def cmd_human(a):
         print(human.request_action(cfg, a.kind, text, blocking, dedupe=a.dedupe) or "")
     elif a.action == "uploads":
         _out(human.scan_uploads(cfg))
+    elif a.action == "notify":
+        human.notify(cfg, a.text)
 
 
 def cmd_lit(a):
@@ -334,6 +341,10 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("doctor", help="check every interface").set_defaults(fn=cmd_doctor)
     sub.add_parser("tick", help="housekeeping + write the PI digest").set_defaults(fn=cmd_tick)
 
+    s = sub.add_parser("weixin", help="human-only Weixin login/listener; apply is runner-only")
+    s.add_argument("action", choices=["login", "listen", "apply"])
+    s.set_defaults(fn=cmd_weixin)
+
     s = sub.add_parser("skills")
     s.add_argument("action", choices=["resolve", "mount", "check", "list"])
     s.add_argument("--role", default="pi")
@@ -342,7 +353,7 @@ def build_parser() -> argparse.ArgumentParser:
     s.set_defaults(fn=cmd_skills)
 
     s = sub.add_parser("human")
-    s.add_argument("action", choices=["check", "ack", "request", "uploads"])
+    s.add_argument("action", choices=["check", "ack", "request", "uploads", "notify"])
     s.add_argument("text", nargs="?", default="")
     s.add_argument("--kind", default="other", choices=["download", "decision", "data", "approval", "other"])
     s.add_argument("--blocking", action="store_true")
@@ -496,7 +507,7 @@ def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     try:
         from autolab import guard
-        track = args.cmd not in ("init", "hook", "guard")
+        track = args.cmd not in ("init", "hook", "guard", "weixin")
         cfg = _cfg(args) if track else None
         before = guard.protected(cfg) if cfg else {}
         try:

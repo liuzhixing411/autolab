@@ -250,3 +250,10 @@ Report issues and lessons from real runs in GitHub issues; `CHANGELOG.md` lists 
 ## Licence
 
 MIT for this repository (`LICENSE`). The skills in `core/skills/` keep their own licences (MIT and Apache-2.0); see `THIRD_PARTY_NOTICES.md`.
+## Optional personal Weixin interaction
+
+Autolab can forward human decision requests and major research progress to personal
+Weixin, then import authenticated replies into its existing human inbox between turns.
+See [setup and interaction guide](docs/WEIXIN.md). The bridge uses HTTP APIs directly;
+no additional model subscription or OpenClaw runtime is needed. Real account binding
+and delivery must be verified during deployment.

@@ -144,6 +144,9 @@ def decide(event: dict, root: Path) -> tuple[bool, str]:
                 p = Path(target).expanduser().resolve()
             except OSError:
                 return False, f"cannot resolve {target}"
+            from autolab.config import framework_root
+            if p.is_relative_to(framework_root().resolve()):
+                return False, "The framework is read-only, including when installed under a scratch root."
             if any(p.is_relative_to(Path(r).expanduser().resolve()) for r in roots):
                 return True, ""
             return False, (f"{target} is outside the project. Write inside the project, or to "
@@ -186,7 +189,7 @@ def decide(event: dict, root: Path) -> tuple[bool, str]:
                 return False, "Invalid command quoting."
             command = args[1:] if args[0] == "autolab" else args[args.index("-m") + 2:]
             # Runner/operator controls must not be invoked by the agent being checked.
-            if (command and command[0] in ("init", "guard")) or "--project" in command or any(a.startswith("--project=") for a in command):
+            if (command and command[0] in ("init", "guard", "weixin")) or "--project" in command or any(a.startswith("--project=") for a in command):
                 return False, "Project initialization, project switching and integrity controls belong to the operator."
             if command[:2] == ["budget", "record"]:
                 return False, "Only the runner records API costs."

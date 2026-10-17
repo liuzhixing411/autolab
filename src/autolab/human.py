@@ -126,6 +126,16 @@ def is_ready(cfg: Config) -> bool:
 
 # ---------------------------------------------------------------- ACTION_NEEDED
 
+
+def notify(cfg: Config, text: str) -> None:
+    """PI progress or reply, explicitly informational (never an accepted finding)."""
+    from autolab.util import FileLock
+    if not text.strip():
+        raise ValueError("notification text is required")
+    path = cfg.layout.state / "human_notifications.jsonl"
+    with FileLock(path):
+        append_jsonl(path, {"at": now_iso(), "text": text.strip()})
+
 def request_action(cfg: Config, kind: str, text: str, blocking: bool = False,
                    dedupe: str | None = None) -> str | None:
     """Append a request for the human. kind: download | decision | data | approval | other.

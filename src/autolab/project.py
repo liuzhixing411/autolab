@@ -149,6 +149,9 @@ def _write_settings(cfg: Config) -> None:
         settings["env"][k] = str(v).replace("{root}", root)
     # Write/Edit tools: human-owned files are denied outright (deny beats acceptEdits)
     settings["permissions"]["deny"] = DENY + [f"Edit(//{root.lstrip('/')}/{p})" for p in PROTECTED_WRITE]
+    weixin_root = (Path.home() / ".cache" / "autolab" / "weixin").as_posix()
+    settings["permissions"]["deny"] += [f"{tool}(//{weixin_root.lstrip('/')}/**)"
+                                         for tool in ("Read", "Edit", "Write")]
     if agents_cfg.get("sandbox"):
         from autolab.guard import _dir
         # OS-level boundary for Bash and every program it starts (bubblewrap on Linux): the hook and
@@ -161,8 +164,8 @@ def _write_settings(cfg: Config) -> None:
             # `autolab` is the sanctioned writer of protected files; scheduler queries need the network
             "excludedCommands": ["autolab *", "squeue *", "sacct *", "seff *", "sinfo *"],
             "filesystem": {"allowWrite": _write_roots(cfg),
-                           "denyRead": [str(_dir(cfg))],
-                           "denyWrite": [f"{root}/{p}" for p in PROTECTED_WRITE] + [str(_dir(cfg)), cfg.fw.as_posix()]},
+                           "denyRead": [str(_dir(cfg)), weixin_root],
+                           "denyWrite": [f"{root}/{p}" for p in PROTECTED_WRITE] + [str(_dir(cfg)), cfg.fw.as_posix(), weixin_root]},
             "network": {"allowedDomains": list(agents_cfg.get("sandbox_domains", SANDBOX_DOMAINS))},
         }
     write_json(cfg.layout.claude / "settings.json", settings)

@@ -32,6 +32,8 @@ fi
 PROMPT='You are the PI of this autonomous lab. Run exactly ONE turn as CLAUDE.md describes: run `autolab tick`, read the digest it names, act on it (delegate execution to the student-* subagents), keep state/STATE.md current, then stop. Do not wait for running jobs; the next turn polls them. If 00_human/READY is missing or 00_human/STOP exists, only run `autolab tick` and stop.'
 mkdir -p state/pi_logs
 while true; do
+  # Import authenticated human replies only between turns, before integrity snapshots.
+  autolab weixin apply || { echo "Weixin reply import failed; stopping"; exit 5; }
   if [ -e 00_human/STOP ]; then echo "$(date -Is) STOP present"; [ $ONCE = 1 ] && exit 0; sleep "$INTERVAL"; continue; fi
   # stop before a turn the remaining budget could not cover (cap minus a turn reserve)
   if ! autolab budget check >/dev/null; then
