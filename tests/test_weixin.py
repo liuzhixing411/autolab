@@ -207,3 +207,11 @@ class Weixin(unittest.TestCase):
             opener.return_value.open.return_value = io.BytesIO(b'{"ret": 0, "errcode": -14}')
             with self.assertRaisesRegex(RuntimeError, "-14"):
                 client.call("getupdates", {})
+
+    def test_send_accepts_production_message_id_ack(self):
+        client = weixin.Client({"token": "secret", "user_id": "owner"})
+        with patch.object(client, "call", return_value={"message_id": "123"}):
+            client.send("hello", "context", "stable-id")
+        with patch.object(client, "call", return_value={}):
+            with self.assertRaises(RuntimeError):
+                client.send("hello", "context", "stable-id")

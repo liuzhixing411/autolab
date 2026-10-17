@@ -86,7 +86,8 @@ class Client:
             "from_user_id": "", "to_user_id": self.account["user_id"], "client_id": key,
             "message_type": 2, "message_state": 2, "context_token": context,
             "item_list": [{"type": 1, "text_item": {"text": text}}]}})
-        if result.get("ret") != 0:
+        # Production iLink also acknowledges successful sends with message_id only.
+        if result.get("ret") != 0 and not result.get("message_id"):
             raise RuntimeError("iLink did not confirm delivery")
 
 
