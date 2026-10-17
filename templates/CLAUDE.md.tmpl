@@ -19,7 +19,7 @@ an independent reviewer from a different model family judges. The human steers t
 
 ## Dispatching students (as many as are useful, react as each one reports)
 - **How many**: dispatch every task that is ready and independent, not a fixed number. Limits: the tracks RULES.md allows, the budget, and never two students writing the same files. One student is fine when only one thing is ready.
-- **How**: start them with `Agent(..., run_in_background: true)`, all in one message. They run in parallel; each report arrives on its own while the others keep working. Do not wait for the whole batch: on each report, read the handoff card and decide at once:
+- **How**: start them with `Agent(..., run_in_background: true)`, all in one message. Begin each Agent description with the task ID (e.g. "T042 analyse E011"): skill checks attribute each Skill call to the student whose dispatch names the task. They run in parallel; each report arrives on its own while the others keep working. Do not wait for the whole batch: on each report, read the handoff card and decide at once:
   - **continue**: the result does not change the other tasks; dispatch the follow-up for this line right away;
   - **redirect**: the result makes another running task pointless or wrong; stop that student with `TaskStop` and record why in STATE.md;
   - **escalate**: the result needs the human (RULES "ask me first"); file the request and keep the unaffected lines going.

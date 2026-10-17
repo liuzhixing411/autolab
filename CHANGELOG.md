@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.4.0 — 2026-10-17
+
+Fixes from an external code review (all reproduced first):
+- **Reviews bound to content**: a claim review stores a fingerprint of the claim (without pi_grade), its evidence files, the cited plans and the experiments' code; the claim gate accepts a review only for the current fingerprint and names what changed.
+- **Human verdicts from the protected zone**: PI/reviewer splits are decided in `00_human/verdicts/<C>.toml` (grade + fingerprint); `human_grade` in claim.md is no longer read.
+- **Idempotent acceptance**: the same claim version returns its existing finding; a new version supersedes the old finding.
+- **Concurrency**: cross-process lock (atomic mkdir, works on NFS/GPFS) for ID counters, ACTION_NEEDED, review lists, the budget ledger and submissions; review records are written with no-overwrite.
+- **Core-hour cap** counts the remaining reservation of queued and running jobs and is checked and reserved under a lock.
+- **API budget**: turns without a cost report are booked as unknown (token usage kept, provisional charge, listed for reconciliation); a turn starts only if a reserve remains and is capped with `claude -p --max-budget-usd`; reviewer calls are recorded; turns are stopped with SIGINT so they report their cost.
+- **Write isolation**: honest safety model in the README; optional Claude Code OS sandbox (`[agents] sandbox = true`, fail-closed, protected paths write-denied, `autolab` as the sanctioned writer); Edit/Write deny rules for protected files; post-turn integrity guard run by the runner (restores configuration changed by a tool call, pauses the lab on findings/decision-log/locked-plan/human-zone tampering); the hook also rejects interpreter commands that write to protected paths.
+- **Reviewer pack**: every review gets the stage's review skills, the TASTE standard, an evidence checklist, a closest-work comparison and uncertainty rules; reviews return `closest_work` and `unverified`.
+- **Novelty support**: claims need a "Closest prior work" table; context packs use stemming, Chinese bigrams and domain synonym groups.
+- **Skill checks bound to the executor**: Skill calls are attributed to the student whose Agent dispatch names the task (or the PI); required skills must also leave their expected files.
+
 ## 0.3.2 — 2026-10-17
 
 - Three more mature MIT skills, with overlays that map them onto autolab files: `brainstorming-research-ideas` and `ara-rigor-reviewer` (Orchestra-Research/AI-Research-SKILLs) and K-Dense `literature-review`. Routes: PI ideation and retrospectives, PI claim review and manuscript review, new student tasks `review` (systematic literature review) and `rigor` (six-dimension rigour review of a claim).

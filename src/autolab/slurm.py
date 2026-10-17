@@ -18,7 +18,7 @@ from pathlib import Path
 from autolab.config import Config
 from autolab.human import stopped
 from autolab.knowledge import plan_gate_passed
-from autolab.util import append_jsonl, now_iso, read_frontmatter, read_jsonl, write_atomic
+from autolab.util import FileLock, append_jsonl, now_iso, read_frontmatter, read_jsonl, write_atomic
 
 TERMINAL = {"COMPLETED", "FAILED", "CANCELLED", "TIMEOUT", "OUT_OF_MEMORY", "NODE_FAIL",
             "PREEMPTED", "BOOT_FAIL", "DEADLINE"}
@@ -291,26 +291,61 @@ def submit(cfg: Config, eid: str, part: str | None = None) -> dict:
                            "not checked.")
     path, r = render(cfg, eid, part)
     cap = float(cfg["slurm"].get("total_core_hours") or 0)
-    if cap:
-        used = core_hours_used(cfg)
-        request = r["billed_cpus"] * r["hours"] * r["array_size"]
-        if used + request > cap:
-            raise RuntimeError(f"core-hour cap: used {used:.1f} + this job up to {request:.1f} > {cap:.0f} "
-                               "(slurm.total_core_hours); ask the human to raise it")
-    proc = subprocess.run([_exe("sbatch"), "--parsable", str(path)], capture_output=True, text=True)
-    if proc.returncode != 0:
-        raise RuntimeError(f"sbatch failed: {proc.stderr.strip()}")
-    job = proc.stdout.strip().split(";")[0]
-    rec = {"job": job, "eid": eid, "part": part, "submitted": now_iso(), "script": str(path),
-           "resources": {k: r[k] for k in ("partition", "qos", "nodes", "ntasks", "cpus", "total_cpus", "billed_cpus",
-                                           "mem_gb", "hours", "gpus", "array", "array_size")}}
-    if r.get("override"):
-        rec["override"] = r["override"]
-    append_jsonl(cfg.layout.experiments / eid / "jobs.jsonl", rec)
+    request = r["billed_cpus"] * r["hours"] * r["array_size"]
+    # check and reserve in one step: concurrent submits used to pass the cap together
+    with FileLock(cfg.layout.state / "slurm_submit"):
+        if cap:
+            c = committed_core_hours(cfg)
+            if c["committed"] + request > cap:
+                raise RuntimeError(f"core-hour cap: used {c['used']:.1f} + reserved for unfinished jobs "
+                                   f"{c['reserved']:.1f} + this job up to {request:.1f} > {cap:.0f} "
+                                   "(slurm.total_core_hours); ask the human to raise it")
+        proc = subprocess.run([_exe("sbatch"), "--parsable", str(path)], capture_output=True, text=True)
+        if proc.returncode != 0:
+            raise RuntimeError(f"sbatch failed: {proc.stderr.strip()}")
+        job = proc.stdout.strip().split(";")[0]
+        rec = {"job": job, "eid": eid, "part": part, "submitted": now_iso(), "script": str(path),
+               "resources": {k: r[k] for k in ("partition", "qos", "nodes", "ntasks", "cpus", "total_cpus",
+                                               "billed_cpus", "mem_gb", "hours", "gpus", "array", "array_size")}}
+        if r.get("override"):
+            rec["override"] = r["override"]
+        append_jsonl(cfg.layout.experiments / eid / "jobs.jsonl", rec)
     for k in ("warning", "warning_cpus"):
         if r.get(k):
             rec = {**rec, k: r[k]}
     return rec
+
+
+def committed_core_hours(cfg: Config) -> dict:
+    """used (finished jobs: actual CPU time) + reserved (unfinished jobs: the larger of their
+    requested maximum and what they used so far). A pending job uses nothing yet but has already
+    claimed its share; counting only `used` let two 6 core-hour jobs pass a 10 core-hour cap."""
+    recs = [r for e in sorted(cfg.layout.experiments.glob("E*"))
+            for r in read_jsonl(e / "jobs.jsonl") if "submitted" in r]
+    if not recs:
+        return {"used": 0.0, "reserved": 0.0, "committed": 0.0}
+    proc = subprocess.run([_exe("sacct"), "-j", ",".join(r["job"] for r in recs), "-X", "-n", "-P",
+                           "-o", "JobID,State,CPUTimeRAW"], capture_output=True, text=True)
+    cpu: dict[str, float] = {}
+    states: dict[str, list[str]] = {}
+    for line in proc.stdout.splitlines():
+        f = line.strip().split("|")
+        if len(f) < 3:
+            continue
+        base = f[0].split("_")[0].split(".")[0]
+        cpu[base] = cpu.get(base, 0.0) + (int(f[2]) / 3600 if f[2].isdigit() else 0.0)
+        states.setdefault(base, []).append(f[1].split()[0] if f[1] else "UNKNOWN")
+    used = reserved = 0.0
+    for r in recs:
+        st = states.get(r["job"], ["PENDING"])
+        done = all(s in TERMINAL for s in st)
+        res = r.get("resources", {})
+        ask = float(res.get("billed_cpus", res.get("cpus", 1))) * float(res.get("hours", 0)) * int(res.get("array_size", 1) or 1)
+        if done:
+            used += cpu.get(r["job"], 0.0)
+        else:
+            reserved += max(ask, cpu.get(r["job"], 0.0))
+    return {"used": round(used, 2), "reserved": round(reserved, 2), "committed": round(used + reserved, 2)}
 
 
 def core_hours_used(cfg: Config) -> float:

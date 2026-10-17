@@ -34,3 +34,13 @@ note = "Many CFD journals are paywalled; expect human_needed downloads."
 # Overrides of framework defaults for this field (same keys as autolab.toml).
 [overrides.gates]
 context_pack_max_items = 15
+
+# Terms that name the same idea; a context-pack query touching one term also searches the others.
+[synonyms]
+groups = [
+  ["breakup", "break-up", "fragmentation", "pinch-off", "rupture"],
+  ["coalescence", "merging", "merger"],
+  ["volume of fluid", "VOF", "volume fraction"],
+  ["bubble", "droplet", "drop", "blob", "inclusion"],
+  ["connected-component labeling", "connected component labelling", "CCL", "blob identification"],
+]

@@ -63,3 +63,8 @@ total_core_hours = 0             # cap for all jobs of this project, enforced by
 [agents]
 allow_bash = []                  # e.g. ["make", "gcc", "mpicc"]
 env = {}                         # e.g. { BASILISK = "{root}/tools/basilisk/src" }
+# OS-level sandbox for Bash and the programs it starts (bubblewrap on Linux): writes to autolab.toml,
+# CLAUDE.md, findings/, state/DECISIONS.md and 00_human/ are blocked, network limited to sandbox_domains.
+# Test with `autolab doctor` and one --once turn before an unattended run.
+sandbox = false
+# sandbox_domains = ["arxiv.org", "api.crossref.org", "pypi.org", "files.pythonhosted.org", "github.com"]

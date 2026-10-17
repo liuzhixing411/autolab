@@ -76,7 +76,7 @@ def cmd_human(a):
             # the human handed final authority to the PI: log for review, never block
             blocking = False
             text = f"[PI decided under delegation until {deleg['until']}; for human review] {text}"
-        print(human.request_action(cfg, a.kind, text, blocking))
+        print(human.request_action(cfg, a.kind, text, blocking, dedupe=a.dedupe) or "")
     elif a.action == "uploads":
         _out(human.scan_uploads(cfg))
 
@@ -131,18 +131,28 @@ def cmd_gate(a):
 
 def cmd_review(a):
     from autolab import reviewer
-    from autolab.util import read_json, write_json
+    from autolab.util import read_frontmatter, read_json, write_json
     cfg = _cfg(a)
     if a.action == "route":
         _out(reviewer.route(cfg, a.task, a.central, a.disagreement, a.text or ""))
         return
     files = [Path(f) for f in a.files]
+    subject = None
     if a.claim:
+        from autolab import gates
+        from autolab.util import FileLock
         files = [cfg.layout.claims / a.claim / "claim.md"] + files
-    rec = reviewer.run(cfg, a.task, files, a.instructions or "", a.central, a.disagreement)
+        meta, _ = read_frontmatter(cfg.layout.claims / a.claim / "claim.md")
+        for e in list(meta.get("evidence", [])) + list(meta.get("validation", {}).values()):
+            if (cfg.layout.root / e).is_file() and cfg.layout.root / e not in files:
+                files.append(cfg.layout.root / e)            # the reviewer reads the evidence itself
+        fp = gates.fingerprint(cfg, a.claim)              # the review counts for this version only
+        subject = {"claim": a.claim, **fp}
+    rec = reviewer.run(cfg, a.task, files, a.instructions or "", a.central, a.disagreement, subject=subject)
     if a.claim:
         p = cfg.layout.claims / a.claim / "reviews.json"
-        write_json(p, (read_json(p, []) or []) + [rec["id"]])
+        with FileLock(p):
+            write_json(p, (read_json(p, []) or []) + [rec["id"]])
     if a.loop:
         from autolab import ledger
         ledger.record_round(cfg, a.loop, rec)
@@ -177,7 +187,9 @@ def cmd_slurm(a):
     elif a.action == "cancel":
         _out({"cancelled": slurm.cancel(cfg, a.eid, a.job)})
     elif a.action == "usage":
-        _out({"core_hours_used": slurm.core_hours_used(cfg),
+        c = slurm.committed_core_hours(cfg)
+        _out({"core_hours_used": slurm.core_hours_used(cfg), "finished_jobs": c["used"],
+              "reserved_for_unfinished": c["reserved"], "committed": c["committed"],
               "cap": cfg["slurm"].get("total_core_hours") or None})
 
 
@@ -187,7 +199,11 @@ def cmd_budget(a):
     if a.action == "record":
         _out(budget.record_turn(cfg, Path(a.log)))
         return
-    st = budget.status(cfg)
+    if a.action == "turn-cap":
+        cap = budget.turn_cap(cfg)
+        print("" if cap is None else f"{cap:.2f}")
+        return 0
+    st = budget.status(cfg, reserve=(a.action == "check"))
     _out(st)
     return 4 if st["over"] else 0
 
@@ -207,6 +223,21 @@ def cmd_decide(a):
 def cmd_lesson(a):
     from autolab import tasks
     print(tasks.add_lesson(_cfg(a), a.text, a.origin, (a.keywords or "").split(",")))
+
+
+def cmd_guard(a):
+    from autolab import guard
+    cfg = _cfg(a)
+    if a.action == "snapshot":
+        _out(guard.snapshot(cfg))
+        return 0
+    from autolab.util import now_iso
+    res = guard.check(cfg, Path(a.log) if a.log else None)
+    if res.get("violations"):
+        print(f"{now_iso()} guard: {len(res['violations'])} violation(s): "
+              + "; ".join(f"{v['file']}: {v['kind']}" for v in res["violations"]))
+        return 5
+    return 0
 
 
 def cmd_wake(a):
@@ -259,6 +290,7 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--blocking", action="store_true")
     s.add_argument("--fyi", action="store_true", help="decision requests are blocking unless marked informational")
     s.add_argument("--title", help="short title shown in bold before the text")
+    s.add_argument("--dedupe", help="add nothing while an open request contains this text")
     s.set_defaults(fn=cmd_human)
 
     s = sub.add_parser("lit", help="literature index: add | update | text (PDF→text) | note (reading receipt) | list | intake (pdf_drop)")
@@ -317,8 +349,8 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--part", help="a [parts.<name>] block of plan.md (runs that write separate outputs)")
     s.set_defaults(fn=cmd_slurm)
 
-    s = sub.add_parser("budget", help="record a PI turn's cost / check the cap (exit 4 = over)")
-    s.add_argument("action", choices=["record", "status"])
+    s = sub.add_parser("budget", help="record a PI turn's cost; status; check (cap minus a turn reserve, exit 4 = stop); turn-cap")
+    s.add_argument("action", choices=["record", "status", "check", "turn-cap"])
     s.add_argument("log", nargs="?")
     s.set_defaults(fn=cmd_budget)
 
@@ -349,6 +381,11 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--origin", required=True, help="what happened that taught this")
     s.add_argument("--keywords", default="")
     s.set_defaults(fn=cmd_lesson)
+
+    s = sub.add_parser("guard", help="runner support: snapshot protected files before a turn, check them after")
+    s.add_argument("action", choices=["snapshot", "check"])
+    s.add_argument("log", nargs="?")
+    s.set_defaults(fn=cmd_guard)
 
     s = sub.add_parser("wake", help="runner support: is a PI turn worth starting? (exit 0 wake, 3 idle)")
     s.add_argument("action", choices=["check", "mark"])

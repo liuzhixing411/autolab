@@ -14,7 +14,7 @@ from pathlib import Path
 
 from autolab.config import Config
 from autolab.human import request_action, uploads
-from autolab.util import (append_jsonl, next_id, now_iso, overlap, read_frontmatter,
+from autolab.util import (append_jsonl, next_id, now_iso, overlap, read_frontmatter, tokens,
                           read_json, read_jsonl, sections, sha256_tree, write_atomic,
                           write_json)
 
@@ -231,10 +231,32 @@ def _sources_hash(cfg: Config) -> str:
 MUST_ALWAYS = ("failed_idea", "rejected_claim")
 
 
+def expand_synonyms(cfg: Config, query: set[str]) -> set[str]:
+    """Add every term of a synonym group the query touches. Groups come from the domain pack
+    (`[synonyms] groups = [[...], ...]` in domain.toml) and the project's
+    `literature/synonyms.toml` (same shape). Keyword overlap alone missed renamed concepts."""
+    import tomllib
+    groups = list(cfg.domain.get("synonyms", {}).get("groups", []))
+    f = cfg.layout.literature / "synonyms.toml"
+    if f.is_file():
+        try:
+            groups += tomllib.loads(f.read_text(encoding="utf-8")).get("groups", [])
+        except tomllib.TOMLDecodeError:
+            pass
+    out = set(query)
+    qt = set().union(*(tokens(q) or {q.lower()} for q in query)) if query else set()
+    for g in groups:
+        gt = set().union(*(tokens(t) or {t.lower()} for t in g)) if g else set()
+        if gt & qt:
+            out.update(g)
+    return out
+
+
 def _select(cfg: Config, query: set[str]) -> list[dict]:
     """Knowledge items relevant to `query`, highest overlap first, with must-read flags."""
     limit = cfg["gates"]["context_pack_max_items"]
     must_tier = cfg["gates"]["require_reading_receipts_tier"]
+    query = expand_synonyms(cfg, query)
     scored = []
     for it in _sources(cfg):
         s = overlap(query, it["text"] + " " + it["title"])
@@ -395,7 +417,8 @@ def _check_precision_and_map(cfg: Config, plan: Path, meta: dict, body: str,
             problems.append(f"hypotheses {unknown} are not in state/HYPOTHESES.md")
     need = skills.required(cfg, "pi", "planning")
     if need and skills.have_logs(cfg):
-        seen = skills.invoked_since(cfg, plan.stat().st_mtime - 6 * 3600)
+        # the PI itself, or a student whose dispatch names this experiment
+        seen = skills.invoked_by(cfg, plan.stat().st_mtime - 6 * 3600, {plan.parent.name}, include_pi=True)
         missing = [s for s in need if s not in seen]
         if missing:
             problems.append(f"planning skills {missing} were not invoked (Skill tool) while this plan was written")

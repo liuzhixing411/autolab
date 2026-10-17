@@ -10,6 +10,7 @@ Vendor skill folders are never edited; overlays are appended when mounting.
 
 from __future__ import annotations
 
+import re
 import shutil
 from pathlib import Path
 
@@ -94,6 +95,61 @@ def invoked_since(cfg: Config, since: float = 0.0) -> dict[str, int]:
                     name = str((block.get("input") or {}).get("skill", "")).split(":")[-1]
                     if name:
                         out[name] = out.get(name, 0) + 1
+    return out
+
+
+def invoked_by(cfg: Config, since: float, ids: set[str], include_pi: bool = False) -> dict[str, int]:
+    """Skill calls attributed to the students whose dispatch mentions one of `ids` (task or
+    experiment IDs in the Agent call's description or prompt), plus the PI's own calls if
+    `include_pi`. Subagent events carry `parent_tool_use_id` = the dispatching Agent call, so a
+    skill one student invoked no longer counts for another student's task."""
+    import json
+    pat = re.compile(r"\b(" + "|".join(re.escape(i) for i in sorted(ids)) + r")\b") if ids else None
+    agents: dict[str, bool] = {}
+    calls: list[tuple[str | None, str]] = []
+    logs = cfg.layout.state / "pi_logs"
+    for log in sorted(logs.glob("*.jsonl")) if logs.is_dir() else []:
+        if log.stat().st_mtime < since:
+            continue
+        for line in log.read_text(encoding="utf-8", errors="ignore").splitlines():
+            if '"Skill"' not in line and '"Agent"' not in line:
+                continue
+            try:
+                ev = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            for block in (ev.get("message") or {}).get("content") or []:
+                if not (isinstance(block, dict) and block.get("type") == "tool_use"):
+                    continue
+                inp = block.get("input") or {}
+                if block.get("name") == "Agent":
+                    text = f"{inp.get('description', '')} {str(inp.get('prompt', ''))[:4000]}"
+                    agents[block.get("id")] = bool(pat and pat.search(text))
+                elif block.get("name") == "Skill":
+                    name = str(inp.get("skill", "")).split(":")[-1]
+                    if name:
+                        calls.append((ev.get("parent_tool_use_id"), name))
+    out: dict[str, int] = {}
+    for parent, name in calls:
+        if (parent is None and include_pi) or (parent is not None and agents.get(parent)):
+            out[name] = out.get(name, 0) + 1
+    return out
+
+
+# files a skill must leave behind when a task card requires it (checked by the handoff gate)
+SKILL_ARTIFACTS = {"ara-rigor-reviewer": ("claims/*/rigor_review.json", "paper/rigor_review.json"),
+                   "literature-review": ("literature/search_log.md",)}
+
+
+def missing_artifacts(cfg: Config, names: list[str], since: float) -> list[str]:
+    out = []
+    for n in names:
+        pats = SKILL_ARTIFACTS.get(n)
+        if not pats:
+            continue
+        hits = [p for pat in pats for p in cfg.layout.root.glob(pat) if p.stat().st_mtime >= since]
+        if not hits:
+            out.append(f"skill '{n}' should leave {' or '.join(pats)} (written after the task card); none found")
     return out
 
 

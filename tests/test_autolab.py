@@ -436,6 +436,9 @@ experiments = ["E001"]
 evidence = ["experiments/E001/results/metrics.json"]
 pi_grade = "{grade}"
 {val}+++
+
+## Closest prior work
+| L0001 | relabels every snapshot | updates labels from the change set | experiments/E001/results/metrics.json |
 """)
         rc, out = run_cli("--project", str(self.root), "review", "run", "claim_support", "--claim", cid)
         self.assertEqual(rc, 0, out)
@@ -461,6 +464,51 @@ pi_grade = "{grade}"
         self.assertTrue((self.cfg.layout.rejected / "C003" / "REJECTED.md").is_file())
         pack = knowledge.build_context_pack(self.cfg, "breakup frequency scales", ["breakup", "frequency"])
         self.assertIn("C003", [i["id"] for i in pack["items"]])
+
+    def test_review_counts_only_for_the_reviewed_version(self):
+        res = self.claim("C010", "B", {"verdict": "yes", "grade": "B", "issues": []})
+        self.assertEqual(res["decision"], "accepted", res)
+        claim = self.cfg.layout.claims / "C010" / "claim.md"
+        claim.write_text(claim.read_text(encoding="utf-8").replace("We^0.52", "We^0.9"), encoding="utf-8")
+        res = gates.claim_gate(self.cfg, "C010")
+        self.assertEqual(res["decision"], "needs_review", res)
+        self.assertIn("claim", " ".join(res["reasons"]))
+        claim.write_text(claim.read_text(encoding="utf-8").replace("We^0.9", "We^0.52"), encoding="utf-8")
+        self.assertEqual(gates.claim_gate(self.cfg, "C010")["decision"], "accepted")      # back to the reviewed version
+        write(self.cfg.layout.experiments / "E001" / "results" / "metrics.json", '{"slope": 0.91}')
+        res = gates.claim_gate(self.cfg, "C010")
+        self.assertEqual(res["decision"], "needs_review")
+        self.assertIn("evidence:experiments/E001/results/metrics.json", " ".join(res["reasons"]))
+
+    def test_accept_is_idempotent(self):
+        first = self.claim("C011", "B")
+        again = gates.claim_gate(self.cfg, "C011")
+        self.assertEqual((first["decision"], again["decision"]), ("accepted", "accepted"))
+        self.assertEqual(first["finding"], again["finding"])
+        self.assertEqual(len(list(self.cfg.layout.findings.glob("F*"))), 1)
+
+    def test_human_verdict_only_from_protected_zone_and_bound_to_version(self):
+        res = self.claim("C012", "A", {"verdict": "yes", "grade": "C", "issues": []})
+        self.assertEqual(res["decision"], "human_decision")
+        fp = gates.fingerprint(self.cfg, "C012")["fingerprint"]
+        vfile = self.cfg.layout.human / "verdicts" / "C012.toml"
+        write(vfile, 'grade = "A"\nfingerprint = "0123456789abcdef"\n')         # another version
+        res = gates.claim_gate(self.cfg, "C012")
+        self.assertEqual(res["decision"], "human_decision")
+        self.assertIn("another version", " ".join(res["reasons"]))
+        write(vfile, f'grade = "A"\nfingerprint = "{fp[:16]}"\n')
+        res = gates.claim_gate(self.cfg, "C012")
+        self.assertEqual((res["decision"], res["grade"]), ("accepted", "A"))
+        d = lambda tool, **inp: hooks.decide({"tool_name": tool, "tool_input": inp}, self.root)[0]
+        self.assertFalse(d("Write", file_path="00_human/verdicts/C012.toml"))   # agents cannot write it
+
+    def test_claim_needs_closest_prior_work(self):
+        write(self.cfg.layout.claims / "C013" / "claim.md",
+              '+++\nstatement = "x"\nexperiments = ["E001"]\nevidence = ["experiments/E001/results/metrics.json"]\n'
+              'pi_grade = "B"\n[validation]\nmesh_convergence = "experiments/E001/results/mesh_convergence.json"\n+++\n')
+        res = gates.claim_gate(self.cfg, "C013")
+        self.assertEqual(res["decision"], "blocked")
+        self.assertIn("Closest prior work", " ".join(res["reasons"]))
 
     def test_grade_split_goes_to_human_once(self):
         res = self.claim("C004", "A", {"verdict": "yes", "grade": "C", "issues": []})
@@ -548,7 +596,8 @@ class Slurm(unittest.TestCase):
     def test_total_core_hour_cap(self):
         passing_plan(self.cfg)                              # 4 cpus x 1.5 h = 6 core-hours requested
         sacct = write(self.bin / "sacct_usage",
-                      '#!/bin/bash\nif [[ "$*" == *CPUTimeRAW* ]]; then echo "4242|36000"; else echo COMPLETED; fi\n')
+                      '#!/bin/bash\nif [[ "$*" == *State,CPUTimeRAW* ]]; then echo "4242|COMPLETED|36000"; '
+                      'elif [[ "$*" == *CPUTimeRAW* ]]; then echo "4242|36000"; else echo COMPLETED; fi\n')
         sacct.chmod(0o755)
         os.environ["AUTOLAB_SACCT"] = str(sacct)
         self.cfg.data["slurm"]["total_core_hours"] = 15
@@ -642,6 +691,25 @@ class Slurm(unittest.TestCase):
             slurm.render(self.cfg, "E001")
         self.cfg.data["slurm"]["max_cpus"] = 0                 # 0 = no project cap
         slurm.render(self.cfg, "E001")
+
+    def test_core_hour_cap_counts_pending_jobs(self):
+        passing_plan(self.cfg)
+        plan = self.cfg.layout.experiments / "E001" / "plan.md"
+        plan.write_text(plan.read_text(encoding="utf-8").replace(
+            "+++\n\n## Prior", '\n[parts.A]\nrun_command = "echo a"\n[parts.B]\nrun_command = "echo b"\n'
+            "+++\n\n## Prior"), encoding="utf-8")
+        knowledge.check_plan(self.cfg, "E001")
+        pend = write(self.bin / "sacct_pend3", "#!/bin/bash\necho '4242|PENDING|0'\n")
+        pend.chmod(0o755)
+        os.environ["AUTOLAB_SACCT"] = str(pend)
+        each = slurm.resources(self.cfg, "E001", "A")
+        per_job = each["billed_cpus"] * each["hours"]
+        self.cfg.data["slurm"]["total_core_hours"] = per_job * 1.5
+        slurm.submit(self.cfg, "E001", "A")                                   # pending: uses 0 but claims per_job
+        with self.assertRaises(RuntimeError) as e:
+            slurm.submit(self.cfg, "E001", "B")
+        self.assertIn("reserved for unfinished jobs", str(e.exception))
+        self.assertEqual(slurm.committed_core_hours(self.cfg)["reserved"], round(per_job, 2))
 
     def test_job_array_render_caps_and_state(self):
         passing_plan(self.cfg)
@@ -815,6 +883,25 @@ class Hooks(unittest.TestCase):
         self.assertFalse(self.d("Bash", command="rm -rf findings/F001"))
         self.assertTrue(self.d("Bash", command="ls findings/"))
 
+    def test_interpreter_writes_to_protected_paths(self):
+        self.assertFalse(self.d("Bash", command="python3 -c \"from pathlib import Path; Path('autolab.toml').write_text('x')\""))
+        self.assertFalse(self.d("Bash", command="python - <<'EOF'\nopen('findings/F001/claim.md','w').write('x')\nEOF"))
+        self.assertTrue(self.d("Bash", command="python3 analysis.py --in findings/F001/finding.json 2>&1 | tail -3"))
+        self.assertTrue(self.d("Bash", command="python3 -c \"print(open('autolab.toml').read())\""))
+
+    def test_sandbox_settings_and_edit_denies(self):
+        project._write_settings(self.cfg)
+        s = read_json(self.root / ".claude" / "settings.json")
+        root = self.root.resolve().as_posix()
+        self.assertIn(f"Edit(/{root}/autolab.toml)", s["permissions"]["deny"])
+        self.assertNotIn("sandbox", s)
+        self.cfg.data["agents"]["sandbox"] = True
+        project._write_settings(self.cfg)
+        sb = read_json(self.root / ".claude" / "settings.json")["sandbox"]
+        self.assertTrue(sb["enabled"] and sb["failIfUnavailable"] and not sb["allowUnsandboxedCommands"])
+        self.assertIn(f"{root}/findings/**", sb["filesystem"]["denyWrite"])
+        self.assertIn("Bash(autolab:*)", sb["excludedCommands"])
+
     def test_human_config_protected(self):
         # agents must not raise their own budget/caps or grant themselves tools
         self.assertFalse(self.d("Edit", file_path="autolab.toml"))
@@ -915,6 +1002,50 @@ class TickAndCli(unittest.TestCase):
         self.assertTrue(st["over"])
         self.assertAlmostEqual(st["spent_usd"], 1.2)
         self.assertIn("Budget: $1.20 of $1.00", Path(tick.run(self.cfg)["digest"]).read_text(encoding="utf-8"))
+
+    def test_budget_unknown_cost_reserve_and_turn_cap(self):
+        from autolab import budget
+        self.cfg.data["budget"]["total_usd"] = 20.0
+        ok = write(self.root / "state" / "pi_logs" / "a.jsonl", '{"type":"result","total_cost_usd":4.0}\n')
+        budget.record_turn(self.cfg, ok)
+        killed = write(self.root / "state" / "pi_logs" / "b.jsonl",
+                       '{"type":"assistant","message":{"id":"m1","model":"claude-opus","usage":{"input_tokens":10,'
+                       '"output_tokens":5,"cache_read_input_tokens":100}}}\n'
+                       '{"type":"assistant","message":{"id":"m1","model":"claude-opus","usage":{"input_tokens":10,'
+                       '"output_tokens":5,"cache_read_input_tokens":100}}}\n')
+        rec = budget.record_turn(self.cfg, killed)
+        self.assertTrue(rec["unknown"])
+        self.assertEqual(rec["usage"]["claude-opus"]["input_tokens"], 10)        # deduplicated by message id
+        st = budget.status(self.cfg)
+        self.assertEqual(st["unknown_cost_turns"], 1)
+        self.assertAlmostEqual(st["spent_usd"], 4.0 + 5.0)                      # unknown turn charged provisionally
+        self.assertAlmostEqual(budget.turn_cap(self.cfg), 11.0)
+        self.cfg.data["budget"]["total_usd"] = 13.0
+        self.assertFalse(budget.status(self.cfg)["over"])
+        self.assertTrue(budget.status(self.cfg, reserve=True)["over"])          # 9 + reserve 5 >= 13
+
+    def test_guard_restores_config_and_pauses_on_findings(self):
+        from autolab import guard
+        guard.snapshot(self.cfg)
+        toml = self.root / "autolab.toml"
+        original = toml.read_text(encoding="utf-8")
+        toml.write_text(original.replace("total_usd = 0.0", "total_usd = 9999.0"), encoding="utf-8")
+        log = write(self.root / "state" / "pi_logs" / "g.jsonl", json.dumps({"type": "assistant", "message": {"content": [
+            {"type": "tool_use", "id": "x", "name": "Bash",
+             "input": {"command": "python -c \"open('autolab.toml','w')\""}}]}}) + "\n")
+        res = guard.check(self.cfg, log)
+        self.assertIn("autolab.toml", res["restored"])
+        self.assertEqual(toml.read_text(encoding="utf-8"), original)
+        self.assertFalse((self.cfg.layout.human / "STOP").exists())
+        guard.snapshot(self.cfg)
+        write(self.cfg.layout.findings / "F777" / "finding.json", "{}")       # no `autolab gate claim` ran
+        res = guard.check(self.cfg, log)
+        self.assertTrue(any(v["file"].startswith("findings/") for v in res["violations"]))
+        self.assertTrue((self.cfg.layout.human / "STOP").exists())
+        (self.cfg.layout.human / "STOP").unlink()
+        guard.snapshot(self.cfg)
+        write(self.cfg.layout.human / "GOAL.md", "# changed by the human\n")      # not in the log: no violation
+        self.assertEqual(guard.check(self.cfg, log)["violations"], [])
 
     def test_numerics_domain_requires_reference_and_timing(self):
         cfgf = self.root / "autolab.toml"
@@ -1029,9 +1160,21 @@ class TickAndCli(unittest.TestCase):
         self.assertIn("belongs to the human", p.stderr)
 
 
-def skill_log(cfg: Config, *names: str) -> Path:
-    """A turn log with Skill-tool calls, shaped like claude -p stream-json."""
-    lines = [json.dumps({"type": "assistant", "message": {"content": [
+def _ids_worker(ids_file: str, n: int) -> list[str]:
+    from autolab.util import next_id
+    return [next_id(Path(ids_file), "review", width=4) for _ in range(n)]
+
+
+def skill_log(cfg: Config, *names: str, task: str | None = None) -> Path:
+    """A turn log with Skill-tool calls, shaped like claude -p stream-json. With `task`, the calls
+    come from a student dispatched by an Agent call whose description names that task."""
+    lines = []
+    parent = None
+    if task:
+        parent = f"agent-{task}-{time.time_ns()}"
+        lines.append(json.dumps({"type": "assistant", "message": {"content": [
+            {"type": "tool_use", "id": parent, "name": "Agent", "input": {"description": f"{task} work", "prompt": "go"}}]}}))
+    lines += [json.dumps({"type": "assistant", "parent_tool_use_id": parent, "message": {"content": [
         {"type": "tool_use", "id": f"t{i}", "name": "Skill", "input": {"skill": n}}]}})
         for i, n in enumerate(names)]
     p = cfg.layout.state / "pi_logs" / f"20991231-{len(list((cfg.layout.state / 'pi_logs').glob('*.jsonl'))) if (cfg.layout.state / 'pi_logs').is_dir() else 0}.jsonl"
@@ -1083,11 +1226,16 @@ class Workflow(unittest.TestCase):
         self.assertIn("verification-before-completion", " ".join(res["problems"]))
         card.write_text(body.format(used='"analyze-results", "verification-before-completion"'), encoding="utf-8")
         self.assertTrue(handoff.validate_in(self.cfg, card)["ok"])                 # no logs: unverifiable, warns
-        skill_log(self.cfg, "analyze-results")                                     # now logs exist
+        tid = read_frontmatter(card_dir / "task.md")[0]["id"]
+        skill_log(self.cfg, "analyze-results", task=tid)                            # now logs exist
         res = handoff.validate_in(self.cfg, card)
         self.assertFalse(res["ok"])
         self.assertIn("never invoked", " ".join(res["problems"]))
-        skill_log(self.cfg, "verification-before-completion")
+        skill_log(self.cfg, "verification-before-completion", task="T999")         # another student's call
+        self.assertFalse(handoff.validate_in(self.cfg, card)["ok"])
+        skill_log(self.cfg, "verification-before-completion")                      # the PI's own call
+        self.assertFalse(handoff.validate_in(self.cfg, card)["ok"])
+        skill_log(self.cfg, "verification-before-completion", task=tid)
         self.assertTrue(handoff.validate_in(self.cfg, card)["ok"])
 
     def test_plan_gate_precision_hypotheses_and_planning_skills(self):
@@ -1104,6 +1252,32 @@ class Workflow(unittest.TestCase):
         self.assertIn("statistical-power", " ".join(knowledge.check_plan(self.cfg, "E001")["problems"]))
         skill_log(self.cfg, "statistical-power")
         self.assertTrue(knowledge.check_plan(self.cfg, "E001")["ok"])
+
+    def test_ids_unique_under_concurrency(self):
+        import concurrent.futures as cf
+        ids_file = self.cfg.layout.ids
+        with cf.ProcessPoolExecutor(4) as ex:
+            got = [i for chunk in ex.map(_ids_worker, [str(ids_file)] * 4, [25] * 4) for i in chunk]
+        self.assertEqual(len(got), 100)
+        self.assertEqual(len(set(got)), 100)
+        from autolab.util import write_new
+        write_new(self.root / "state" / "once.txt", "a")
+        with self.assertRaises(FileExistsError):
+            write_new(self.root / "state" / "once.txt", "b")
+
+    def test_synonyms_widen_context_packs(self):
+        knowledge.lit_add(self.cfg, "Pinch-off dynamics of liquid threads", "10.1/pinch", 2020, "B", "theory", "oa",
+                          ["pinch-off"])
+        pack = knowledge.build_context_pack(self.cfg, "fragmentation statistics", ["fragmentation"])
+        self.assertIn("Pinch-off dynamics of liquid threads", [i["title"] for i in pack["items"]])
+
+    def test_review_pack_has_standards(self):
+        from autolab import reviewer
+        pack = reviewer.review_pack(self.cfg, "claim_support")
+        self.assertIn(".claude/skills/experiment-audit/SKILL.md", pack)
+        self.assertIn("00_human/TASTE.md", pack)
+        self.assertIn("uncalibrated", pack)                                         # no taste examples yet
+        self.assertIn("unverified", pack)
 
     def test_decisions_are_append_only(self):
         from autolab import tasks

@@ -90,12 +90,16 @@ def check_skills_used(cfg: Config, card: Path) -> tuple[list[str], list[str]]:
     problems = [f"required skill '{s}' not in skills_used (invoke it with the Skill tool, then list it)"
                 for s in need if s not in used]
     warnings: list[str] = []
+    since = task_card.stat().st_mtime - 60
     if skills.have_logs(cfg):
-        seen = skills.invoked_since(cfg, task_card.stat().st_mtime - 60)
-        problems += [f"skill '{s}' is listed in skills_used but was never invoked (no Skill-tool call in the logs)"
+        tid = str(tmeta.get("id", card.parent.name.split("-")[0]))
+        seen = skills.invoked_by(cfg, since, {tid})       # only this task's student counts
+        problems += [f"skill '{s}' is listed in skills_used but this task's student never invoked it (no Skill "
+                     f"call under an Agent dispatch that names {tid}; put the task ID in the Agent description)"
                      for s in need if s in used and s not in seen]
     else:
         warnings.append("no turn logs: skill invocations could not be verified")
+    problems += skills.missing_artifacts(cfg, [s for s in need if s in used], since)
     return problems, warnings
 
 

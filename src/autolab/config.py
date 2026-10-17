@@ -68,7 +68,7 @@ DEFAULTS: dict[str, Any] = {
     "budget": {"total_usd": 0.0, "usd_per_day": 40.0, "usd_per_task": 5.0},
     # extra shell commands the human allows the agents (rendered into .claude/settings.json by
     # `autolab skills mount`), and extra environment variables for their sessions
-    "agents": {"allow_bash": [], "env": {}},
+    "agents": {"allow_bash": [], "env": {}, "sandbox": False},   # sandbox: OS-level write/network limits for Bash (Linux: bubblewrap)
     "slurm": {
         "account": "",
         "partition": "cpu",

@@ -130,29 +130,32 @@ def request_action(cfg: Config, kind: str, text: str, blocking: bool = False,
                    dedupe: str | None = None) -> str | None:
     """Append a request for the human. kind: download | decision | data | approval | other.
     With `dedupe`, nothing is added while an open request already contains that text."""
-    from autolab.util import next_id
-    if dedupe and any(dedupe in line for line in open_actions(cfg)):
-        return None
-    aid = next_id(cfg.layout.ids, "action")
-    tag = "BLOCKING" if blocking else "optional"
-    with cfg.layout.action_needed.open("a", encoding="utf-8", newline="\n") as f:
-        f.write(f"- [ ] **{aid}** [{tag}] [{kind}] {text.strip()}  _(added {now_iso()})_\n")
+    from autolab.util import FileLock, next_id
+    with FileLock(cfg.layout.action_needed):
+        if dedupe and any(dedupe in line for line in open_actions(cfg)):
+            return None
+        aid = next_id(cfg.layout.ids, "action")
+        tag = "BLOCKING" if blocking else "optional"
+        with cfg.layout.action_needed.open("a", encoding="utf-8", newline="\n") as f:
+            f.write(f"- [ ] **{aid}** [{tag}] [{kind}] {text.strip()}  _(added {now_iso()})_\n")
     return aid
 
 
 def resolve_actions(cfg: Config, needle: str, note: str) -> int:
     """Tick off open requests containing `needle` (e.g. a paper the agents obtained themselves)."""
+    from autolab.util import FileLock, write_atomic
     p = cfg.layout.action_needed
     if not p.is_file():
         return 0
-    lines = p.read_text(encoding="utf-8").splitlines()
-    n = 0
-    for i, line in enumerate(lines):
-        if line.startswith("- [ ]") and needle in line:
-            lines[i] = "- [x]" + line[5:] + f"  — resolved automatically {now_iso()}: {note}"
-            n += 1
-    if n:
-        p.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    with FileLock(p):
+        lines = p.read_text(encoding="utf-8").splitlines()
+        n = 0
+        for i, line in enumerate(lines):
+            if line.startswith("- [ ]") and needle in line:
+                lines[i] = "- [x]" + line[5:] + f"  — resolved automatically {now_iso()}: {note}"
+                n += 1
+        if n:
+            write_atomic(p, "\n".join(lines) + "\n")
     return n
 
 

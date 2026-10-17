@@ -101,6 +101,27 @@ def _rel(path: str, root: Path) -> str | None:
         return None
 
 
+_INTERP = re.compile(r"(^|[\s/;&|(])(python3?|perl|ruby|node|Rscript)\b")
+_WRITE_OPS = re.compile(r"write_text|write_bytes|\.write\(|open\([^)]*,\s*(mode\s*=\s*)?['\"][wax+]|shutil\.|os\.(replace|rename|remove|"
+                        r"unlink|truncate)|\.unlink\(|\.rename\(|\.replace\(|>>?\s*\S")
+
+
+def _interpreter_writes(cmd: str, root: Path) -> str:
+    """Protected path mentioned by an interpreter command that also performs a file write
+    (seen in review: `python -c "Path('autolab.toml').write_text(...)"` passed the shell checks)."""
+    plain = re.sub(r"\d?>&\d|\d?>\s*/dev/null", " ", cmd)           # stream merges are not writes
+    if not _INTERP.search(plain) or not _WRITE_OPS.search(plain):
+        return ""
+    paths = list(HUMAN_CONFIG) + list(APPEND_ONLY) + ["findings/", "00_human/"]
+    paths += [p.parent.relative_to(root).as_posix() + "/plan.md"
+              for p in (root / "experiments").glob("*/jobs.jsonl")] if (root / "experiments").is_dir() else []
+    for p in paths:
+        if p in cmd and not any(ok in cmd for ok in ("00_human/ACTION_NEEDED.md", "00_human/ACK.md")
+                                if p == "00_human/"):
+            return p
+    return ""
+
+
 def decide(event: dict, root: Path) -> tuple[bool, str]:
     tool = event.get("tool_name", "")
     inp = event.get("tool_input", {}) or {}
@@ -169,6 +190,11 @@ def decide(event: dict, root: Path) -> tuple[bool, str]:
                            f"({', '.join(HUMAN_CONFIG)}); ask with `autolab human request --kind approval`.")
         if any(_writes_into(cmd, p) for p in APPEND_ONLY):
             return False, "state/DECISIONS.md is append-only: use `autolab decide`."
+        hit = _interpreter_writes(cmd, root)
+        if hit:
+            return False, (f"A script that writes files mentions the protected path '{hit}'. Protected files change "
+                           "only through `autolab` commands or the human. (This check is best effort; the "
+                           "post-turn guard and the OS sandbox are the real boundary.)")
     return True, ""
 
 

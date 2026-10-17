@@ -15,7 +15,7 @@ import subprocess
 from pathlib import Path
 
 from autolab.config import Config
-from autolab.util import next_id, now_iso, read_frontmatter, write_atomic, write_json
+from autolab.util import next_id, now_iso, read_frontmatter, write_atomic, write_json, write_new
 
 ORDER = ("light", "regular", "deep")
 VERDICT_TASKS = {"claim_support", "experiment_audit", "novelty", "kill_argument",
@@ -61,9 +61,43 @@ def route(cfg: Config, task: str, central: bool = False, disagreement: bool = Fa
             "fallback_models": rv.get("fallback_models", []), "reasons": reasons}
 
 
+TASK_STAGE = {"claim_support": "claim_review", "experiment_audit": "claim_review", "kill_argument": "claim_review",
+              "value_grade": "claim_review", "novelty": "claim_review", "idea_review": "ideation",
+              "section_review": "manuscript_review", "review_loop_round": "manuscript_review",
+              "citation_audit": "manuscript_review", "paper_claim_audit": "manuscript_review",
+              "final_cold_read": "manuscript_review"}
+
+
+def review_pack(cfg, task: str) -> str:
+    """Standards every review of this task gets, whatever the caller wrote: the lab's review skills
+    for the task's stage, the human's value standard (TASTE), an evidence checklist, a closest-work
+    comparison and uncertainty rules. (Reviews used to get only the task name and file paths.)"""
+    from autolab import skills
+    stage = cfg["reviewer"].get("task_stage", {}).get(task) or TASK_STAGE.get(task)
+    names = skills.resolve(cfg, "reviewer", stage) if stage else []
+    mount = cfg.layout.skills_mount
+    procs = [f"- .claude/skills/{n}/SKILL.md" for n in names if (mount / n / "SKILL.md").is_file()]
+    anchors = [p for p in (cfg.layout.taste_good, cfg.layout.taste_bad) if p.is_dir() and any(p.iterdir())]
+    lines = ["Review standards (read before judging):"]
+    lines += procs or ["- (no review skill routed for this task)"]
+    lines += ["Value standard: 00_human/TASTE.md" + (" and the examples in " + ", ".join(
+        p.relative_to(cfg.layout.root).as_posix() for p in anchors) if anchors else
+        " (no graded examples yet: say that your value grade is uncalibrated)") +
+        ". Grade value against it, not against general taste.",
+        "Evidence checklist: locate every number in the reviewed text in one of the listed evidence files; "
+        "list each number you could not locate as an issue.",
+        "Prior work: name the closest prior work (from literature/REVIEW.md, literature/notes/ or your own "
+        "knowledge; say which), the mechanism difference, and where the evidence shows that difference. A novelty "
+        "statement you cannot verify goes under `unverified`; do not accept it.",
+        "Uncertainty: when the evidence is insufficient, say so and lower `confidence`; do not fill gaps with "
+        "assumptions."]
+    return "\n".join(lines)
+
+
 def build_prompt(task: str, files: list[Path], instructions: str, root: Path,
-                 verdict_allowed: bool = True) -> str:
-    """Reviewer gets a role, an objective and file paths only — never the executor's summary."""
+                 verdict_allowed: bool = True, pack: str = "") -> str:
+    """Reviewer gets a role, an objective, the review pack and file paths only — never the
+    executor's summary."""
     def show(p: Path) -> str:
         try:
             return p.relative_to(root).as_posix()
@@ -79,9 +113,12 @@ def build_prompt(task: str, files: list[Path], instructions: str, root: Path,
     return (
         f"You are an independent reviewer. Task: {task}.\n"
         f"{instructions.strip()}\n\n"
+        + (pack.strip() + "\n\n" if pack.strip() else "") +
         f"Read these files yourself (do not rely on any summary):\n{rel}\n\n"
         "End your answer with one JSON object in a ```json fence with keys:\n" + schema +
         '  "issues": [{"id": str, "severity": "critical"|"major"|"minor", "text": str}],\n'
+        '  "closest_work": [{"ref": str, "difference": str, "evidence": str}],\n'
+        '  "unverified": [str],\n'
         '  "confidence": "low" | "medium" | "high"\n')
 
 
@@ -98,7 +135,10 @@ def parse_verdict(text: str) -> dict:
 
 
 def run(cfg: Config, task: str, files: list[Path], instructions: str = "",
-        central: bool = False, disagreement: bool = False, out_dir: Path | None = None) -> dict:
+        central: bool = False, disagreement: bool = False, out_dir: Path | None = None,
+        subject: dict | None = None) -> dict:
+    """`subject`: what is being judged and its content fingerprint (claims: gates.fingerprint);
+    the claim gate accepts a review only for that exact version."""
     root = cfg.layout.root
     files = [p if p.is_absolute() else root / p for p in files]
     missing = [str(p) for p in files if not p.is_file()]
@@ -107,7 +147,7 @@ def run(cfg: Config, task: str, files: list[Path], instructions: str = "",
     text = " ".join(p.read_text(encoding="utf-8", errors="ignore")[:20000] for p in files)
     r = route(cfg, task, central, disagreement, text)
     verdict_allowed = bool(cfg["reviewer"]["tiers"][r["tier"]].get("verdict_allowed"))
-    prompt = build_prompt(task, files, instructions, root, verdict_allowed)
+    prompt = build_prompt(task, files, instructions, root, verdict_allowed, review_pack(cfg, task))
     rid = next_id(cfg.layout.ids, "review", width=4)
     out_dir = out_dir or cfg.layout.reviews
     backend = cfg["reviewer"]["backend"]
@@ -138,9 +178,16 @@ def run(cfg: Config, task: str, files: list[Path], instructions: str = "",
         verdict["verdict"], verdict["grade"] = "n/a", None
     record = {"id": rid, "task": task, "route": r, "files": [str(f) for f in files],
               "backend": backend, "created": now_iso(), **verdict}
-    write_atomic(out_dir / f"{rid}.prompt.md", prompt)
-    write_atomic(out_dir / f"{rid}.raw.md", raw)
-    write_json(out_dir / f"{rid}.json", record)
+    if subject:
+        record["subject"] = subject
+    usd = float(cfg["reviewer"].get("usd_per_call", 0) or 0)
+    if usd or backend != "mock":
+        from autolab import budget
+        budget.record_cost(cfg, "review", usd if usd else None, {"review": rid, "model": r["model"]},
+                           known=bool(usd) or backend == "codex")
+    write_new(out_dir / f"{rid}.prompt.md", prompt)          # review records are never overwritten
+    write_new(out_dir / f"{rid}.raw.md", raw)
+    write_new(out_dir / f"{rid}.json", json.dumps(record, indent=2, ensure_ascii=False) + "\n")
     return record
 
 

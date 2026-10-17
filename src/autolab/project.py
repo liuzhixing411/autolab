@@ -79,6 +79,15 @@ DENY = [
 ]
 
 
+# human-owned or gate-owned paths: Write/Edit tools denied; with the sandbox, writes from any Bash
+# program denied too (`autolab` commands, which run unsandboxed, are the sanctioned writers)
+PROTECTED_WRITE = ["autolab.toml", "CLAUDE.md", "findings/**", "state/DECISIONS.md", "00_human/**"]
+# network for sandboxed Bash (literature, packages, code hosting); extend in [agents] sandbox_domains
+SANDBOX_DOMAINS = ["arxiv.org", "export.arxiv.org", "api.crossref.org", "doi.org", "api.openalex.org",
+                   "api.semanticscholar.org", "pypi.org", "files.pythonhosted.org", "github.com",
+                   "raw.githubusercontent.com", "codeload.github.com"]
+
+
 def _write_roots(cfg: Config) -> list[str]:
     """Places outside the project where agents may write files (scratch run output, /tmp)."""
     import os
@@ -129,8 +138,26 @@ def _write_settings(cfg: Config) -> None:
     }
     # extra variables the human set for the agents ({root} = project root), e.g. BASILISK for qcc
     root = cfg.layout.root.resolve().as_posix()
-    for k, v in cfg.data.get("agents", {}).get("env", {}).items():
+    agents_cfg = cfg.data.get("agents", {})
+    for k, v in agents_cfg.get("env", {}).items():
         settings["env"][k] = str(v).replace("{root}", root)
+    # Write/Edit tools: human-owned files are denied outright (deny beats acceptEdits)
+    settings["permissions"]["deny"] = DENY + [f"Edit(/{root}/{p})" for p in PROTECTED_WRITE]
+    if agents_cfg.get("sandbox"):
+        # OS-level boundary for Bash and every program it starts (bubblewrap on Linux): the hook and
+        # the allow list only filter command text, a script can still write anywhere the user can
+        settings["sandbox"] = {
+            "enabled": True,
+            "failIfUnavailable": True,             # refuse to run unsandboxed
+            "allowUnsandboxedCommands": False,
+            "autoAllowBashIfSandboxed": True,
+            # `autolab` is the sanctioned writer of protected files; scheduler queries need the network
+            "excludedCommands": ["Bash(autolab:*)", "Bash(squeue:*)", "Bash(sacct:*)", "Bash(seff:*)",
+                                 "Bash(sinfo:*)"],
+            "filesystem": {"allowWrite": _write_roots(cfg),
+                           "denyWrite": [f"{root}/{p}" for p in PROTECTED_WRITE]},
+            "network": {"allowedDomains": list(agents_cfg.get("sandbox_domains", SANDBOX_DOMAINS))},
+        }
     write_json(cfg.layout.claude / "settings.json", settings)
 
 

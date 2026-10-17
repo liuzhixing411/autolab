@@ -24,10 +24,14 @@ PROMPT='You are the PI of this autonomous lab. Run exactly ONE turn as CLAUDE.md
 mkdir -p state/pi_logs
 while true; do
   if [ -e 00_human/STOP ]; then echo "$(date -Is) STOP present"; [ $ONCE = 1 ] && exit 0; sleep "$INTERVAL"; continue; fi
-  if ! autolab budget status >/dev/null; then
-    autolab human request --kind approval --blocking "API budget cap reached ($(autolab budget status | tr -d '\n ')). Raise [budget] total_usd in autolab.toml to continue." >/dev/null
-    echo "$(date -Is) budget cap reached; stopping"; exit 4
+  # stop before a turn the remaining budget could not cover (cap minus a turn reserve)
+  if ! autolab budget check >/dev/null; then
+    autolab human request --kind approval --blocking --dedupe "API budget nearly used up" "API budget nearly used up ($(autolab budget check | tr -d '\n ')). Raise [budget] total_usd in autolab.toml to continue." >/dev/null
+    echo "$(date -Is) budget cap minus turn reserve reached; stopping"; exit 4
   fi
+  # the turn itself may not spend more than what is left (claude -p --max-budget-usd)
+  CAP="$(autolab budget turn-cap 2>/dev/null)"; CAPARG=()
+  [ -n "$CAP" ] && CAPARG=(--max-budget-usd "$CAP")
   # skip the (paid) Claude turn when nothing changed; exit 3 = idle, anything else = wake
   autolab wake check --max-idle "${PI_MAX_IDLE_MIN:-45}" > state/pi_logs/wake-last.txt 2>&1; WRC=$?
   if [ "$WRC" = 3 ] && [ $ONCE = 0 ]; then
@@ -39,13 +43,17 @@ while true; do
   # Scheduling/wake-up tools keep a headless session alive after its result (seen in turn 5:
   # ScheduleWakeup 1800 s stalled the loop). One turn = one process that ends.
   # hard wall-clock limit per turn (default 60 min) so a stuck session cannot block the loop
-  timeout --signal=TERM --kill-after=60 "${PI_TURN_TIMEOUT:-3600}" \
-    claude -p "$PROMPT" --model "$MODEL" --permission-mode acceptEdits --max-turns "$MAXTURNS" \
+  # SIGINT first: it ends the turn, while SIGTERM records no result (cost would be unknown)
+  autolab guard snapshot >/dev/null 2>&1 || true
+  timeout --signal=INT --kill-after=120 "${PI_TURN_TIMEOUT:-3600}" \
+    claude -p "$PROMPT" --model "$MODEL" --permission-mode acceptEdits --max-turns "$MAXTURNS" "${CAPARG[@]}" \
          --disallowedTools "ScheduleWakeup,CronCreate,CronDelete,CronList,Monitor,RemoteTrigger" \
          --output-format stream-json --verbose > "$LOG" 2> "state/pi_logs/$TS.err"
   RC=$?                                  # 124 = turn hit the time limit
   [ "$RC" = 124 ] && echo "$(date -Is) turn exceeded ${PI_TURN_TIMEOUT:-3600}s and was stopped" >> state/pi_logs/runner-loop.out
   autolab budget record "$LOG" >/dev/null || true
+  # protected files changed by a tool call this turn? (restores config, else STOP + ask the human)
+  autolab guard check "$LOG" >> state/pi_logs/runner-loop.out 2>&1 || true
   autolab wake mark >/dev/null 2>&1 || true
   printf '{"ts":"%s","rc":%d,"seconds":%d,"log":"%s","model":"%s"}\n' "$TS" "$RC" "$(( $(date +%s)-T0 ))" "$LOG" "$MODEL" >> state/pi_runs.jsonl
   printf '{"state":"idle","host":"%s","last_rc":%d,"last_log":"%s","finished":"%s"}\n' "$(hostname)" "$RC" "$LOG" "$(date -Is)" > state/pi_status.json

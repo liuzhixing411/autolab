@@ -17,6 +17,7 @@ This folder is yours. Agents can only read it; the only files they write are `AC
 | `ACK.md` | The PI's receipt for each of your changes: what it understood and changed | Read only |
 | `READY` | Create this empty file when the initial input is complete; nothing is dispatched before | Once, at the start |
 | `STOP` | Create an empty file named STOP to pause all agents at once; delete it to resume | Emergencies |
+| `verdicts/` | Your grade when the PI and the reviewer disagree by two grades: `verdicts/<C>.toml` with `grade` and the `fingerprint` given in the request (a later change to the claim voids it) | When asked in ACTION_NEEDED |
 | `DELEGATED` | Optional: lets the PI make the decisions RULES reserve for you until a given time (e.g. overnight). TOML: `until = "2026-10-16T08:00:00-04:00"`, `to = "pi"`. Each decision is logged in ACTION_NEEDED for your review | When you will be away |
 
 You don't need to worry about a half-saved edit being read: a change counts only after the file has been untouched for 5 minutes (configurable in autolab.toml).

@@ -29,3 +29,13 @@ note = "Computational physics journals are often paywalled; computer science pap
 
 [overrides.gates]
 context_pack_max_items = 15
+
+# Terms that name the same idea; a context-pack query touching one term also searches the others.
+[synonyms]
+groups = [
+  ["connected-component labeling", "connected component labelling", "CCL", "component labeling", "blob detection", "region labeling"],
+  ["dynamic connectivity", "incremental connectivity", "fully dynamic graph connectivity", "online connectivity"],
+  ["union-find", "disjoint set", "disjoint-set forest"],
+  ["simple point", "topological number", "digital topology"],
+  ["speedup", "speed-up", "acceleration", "runtime reduction"],
+]

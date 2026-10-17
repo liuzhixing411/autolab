@@ -125,11 +125,60 @@ _ID_PREFIX = {"experiment": "E", "claim": "C", "finding": "F", "task": "T",
               "issue": "I", "review": "R", "decision": "D", "lesson": "LS"}
 
 
+class FileLock:
+    """Cross-process lock: mkdir is atomic on local, NFS and GPFS file systems (flock is not
+    reliable across login nodes). A lock older than `stale_s` is taken over (crashed holder)."""
+
+    def __init__(self, path: Path, timeout_s: float = 60.0, stale_s: float = 300.0):
+        self.dir = Path(str(path) + ".lock")
+        self.timeout_s, self.stale_s = timeout_s, stale_s
+
+    def __enter__(self):
+        import time
+        start = time.time()
+        self.dir.parent.mkdir(parents=True, exist_ok=True)
+        while True:
+            try:
+                os.mkdir(self.dir)
+                return self
+            except FileExistsError:
+                try:
+                    if time.time() - self.dir.stat().st_mtime > self.stale_s:
+                        os.rmdir(self.dir)
+                        continue
+                except FileNotFoundError:
+                    continue
+                if time.time() - start > self.timeout_s:
+                    raise TimeoutError(f"could not lock {self.dir} within {self.timeout_s:.0f} s")
+                time.sleep(0.05)
+
+    def __exit__(self, *exc):
+        try:
+            os.rmdir(self.dir)
+        except FileNotFoundError:
+            pass
+        return False
+
+
+def write_new(path: Path, text: str) -> None:
+    """Write a file that must not exist yet; raises FileExistsError instead of overwriting."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=".tmp-")
+    with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as f:
+        f.write(text)
+    try:
+        os.link(tmp, path)               # atomic, fails if `path` exists
+    finally:
+        os.unlink(tmp)
+
+
 def next_id(ids_file: Path, kind: str, width: int = 3) -> str:
-    counters = read_json(ids_file, {}) or {}
-    n = int(counters.get(kind, 0)) + 1
-    counters[kind] = n
-    write_json(ids_file, counters)
+    """Read-increment-write under a cross-process lock (two reviewers once both got R001)."""
+    with FileLock(ids_file):
+        counters = read_json(ids_file, {}) or {}
+        n = int(counters.get(kind, 0)) + 1
+        counters[kind] = n
+        write_json(ids_file, counters)
     return f"{_ID_PREFIX[kind]}{n:0{width}d}"
 
 
@@ -140,10 +189,39 @@ _STOP = {"the", "and", "for", "with", "that", "this", "from", "are", "was", "wer
          "into", "using", "use", "our", "not", "but", "has", "have", "its", "can"}
 
 
+_SUFFIXES = ("ations", "ation", "ings", "ing", "ies", "ied", "es", "ed", "s")
+_CJK = re.compile(r"[一-鿿]")
+
+
+def stem(word: str) -> str:
+    """Crude suffix stripping, applied the same way to queries and texts, so that 'bubbles',
+    'bubble' and 'labelled'/'labelling' meet. Not linguistics: just fewer missed matches."""
+    w = word.lower()
+    if _CJK.match(w):
+        return w
+    for suf in _SUFFIXES:
+        if w.endswith(suf) and len(w) - len(suf) >= 4:
+            w = w[:-len(suf)]
+            break
+    return w.rstrip("e") if len(w) > 4 else w
+
+
 def tokens(text: str) -> set[str]:
-    return {w.lower() for w in _WORD.findall(text or "") if w.lower() not in _STOP}
+    out = set()
+    for w in _WORD.findall(text or ""):
+        lw = w.lower()
+        if lw in _STOP:
+            continue
+        if _CJK.match(lw):                     # Chinese has no spaces: index character bigrams too
+            out.add(lw)
+            out.update(lw[i:i + 2] for i in range(len(lw) - 1))
+        else:
+            out.add(stem(lw))
+    return out
 
 
 def overlap(query: Iterable[str], text: str) -> int:
-    q = {t.lower() for t in query}
+    q = set()
+    for t in query:
+        q |= tokens(t) or {t.lower()}
     return len(q & tokens(text))
