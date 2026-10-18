@@ -1414,6 +1414,29 @@ class ResearchSteering(unittest.TestCase):
         self.assertTrue(d("Bash", command="autolab outcome E001 --engineering valid --hypothesis n/a --value refine --why x"))
         self.assertTrue(d("Bash", command="cat experiments/E001/outcomes.jsonl"))
 
+    def test_legacy_experiment_without_evaluator_can_be_closed(self):
+        from autolab.util import append_jsonl
+        passing_plan(self.cfg)
+        exp = self.cfg.layout.experiments / "E001"
+        plan = exp / "plan.md"
+        plan.write_text(plan.read_text(encoding="utf-8").replace(
+            'run_command = "echo run"', 'run_command = "echo run"\nanalysis_command = "python analysis/analyze.py"'),
+            encoding="utf-8")
+        write(exp / "analysis" / "analyze.py", "print('mean')\n")
+        finish_jobs(self.cfg, "E001")                                         # submitted now: not legacy
+        with self.assertRaises(ValueError):
+            research.record_outcome(self.cfg, "E001", "valid", "supports", "continue", "slope 0.5")
+        (exp / "jobs.jsonl").unlink()                                         # first job before 0.5.0
+        append_jsonl(exp / "jobs.jsonl", {"job": "777", "eid": "E001", "submitted": "2026-10-16T23:51:49-04:00",
+                                          "resources": {"total_cpus": 4}})
+        self.assertEqual(research.legacy_unfrozen(self.cfg, "E001"), "2026-10-16T23:51:49-04:00")
+        rec = research.record_outcome(self.cfg, "E001", "valid", "supports", "continue", "slope 0.5")
+        self.assertTrue(rec["legacy"])
+        self.assertEqual(rec["evaluator"], "legacy-unfrozen")
+        self.assertTrue(any(w.startswith("legacy:") for w in rec["warnings"]))
+        self.assertTrue(read_json(exp / "outcome.json")["legacy"])
+        self.assertEqual(research.missing_outcomes(self.cfg), [])
+
     def test_finished_experiment_blocks_new_plans_and_tree(self):
         passing_plan(self.cfg)
         finish_jobs(self.cfg, "E001")

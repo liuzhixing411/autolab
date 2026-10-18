@@ -134,6 +134,28 @@ def freeze_evaluator(cfg: Config, eid: str) -> dict | None:
     return rec
 
 
+# Release of the frozen-evaluator step (0.5.0). An experiment whose first job was submitted before
+# this could not have been frozen; without this exemption such experiments could never be closed and
+# blocked every new plan (first-test A031, 2026-10-17: E012-E016 stuck for 37 hours).
+EVALUATOR_SINCE = "2026-10-17T01:54:22-04:00"
+
+
+def legacy_unfrozen(cfg: Config, eid: str) -> str | None:
+    """Submission time of the first job if it predates frozen evaluators, else None."""
+    import datetime as dt
+    jobs = [r for r in read_jsonl(cfg.layout.experiments / eid / "jobs.jsonl") if "submitted" in r]
+    if not jobs:
+        return None
+    try:
+        first = min(dt.datetime.fromisoformat(j["submitted"]) for j in jobs)
+        since = dt.datetime.fromisoformat(EVALUATOR_SINCE)
+        if first.tzinfo is None:
+            first = first.astimezone()
+        return first.isoformat() if first < since else None
+    except (TypeError, ValueError):
+        return None
+
+
 def evaluator_problems(cfg: Config, eid: str) -> tuple[list[str], list[str]]:
     exp = cfg.layout.experiments / eid
     rec = read_json(exp / "evaluator.json")
@@ -142,6 +164,10 @@ def evaluator_problems(cfg: Config, eid: str) -> tuple[list[str], list[str]]:
             return ["experiment plan is missing"], []
         meta, _ = read_frontmatter(exp / "plan.md")
         if meta.get("analysis_command"):
+            first = legacy_unfrozen(cfg, eid)
+            if first:
+                return [], [f"legacy: first job submitted {first}, before frozen evaluators existed "
+                            f"({EVALUATOR_SINCE}); the analysis script was not fingerprinted by the framework"]
             return ["analysis_command has no frozen evaluator; register its scripts before running"], []
         return [], ["no frozen evaluator (plan has no analysis_command): the analysis was not fixed before the data"]
     amend = (exp / "plan_amendments.md").read_text(encoding="utf-8") if (exp / "plan_amendments.md").is_file() else ""
@@ -219,6 +245,9 @@ def record_outcome(cfg: Config, eid: str, engineering: str, hypothesis: str, val
            "core_hours": core_hours(exp),
            "usd": usd, "warnings": warns,
            "jobs_seen": sum(1 for r in read_jsonl(exp / "jobs.jsonl") if "submitted" in r)}
+    if any(w.startswith("legacy:") for w in warns):
+        rec["legacy"] = True
+        rec["evaluator"] = "legacy-unfrozen"
     rec["version"] = experiment_version(cfg, eid)
     rec["evidence_hashes"] = evidence_hashes
     rec["run_jobs"] = [j["job"] for j in latest.values()]
