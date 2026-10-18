@@ -246,6 +246,72 @@ def render_event(cfg, e):
     return text
 
 
+
+def is_progress_query(text):
+    """Read-only intent; decision/note commands must retain their explicit semantics."""
+    normalized = re.sub(r"[\s，。！？?！,.]+", "", text).lower()
+    if normalized.startswith(("回复", "reply", "留言", "note")):
+        return False
+    return (normalized in ("状态", "status", "progress", "update") or
+            any(word in normalized for word in ("进展", "进度", "做到哪", "做得怎么样", "结果怎么样", "最新结果")))
+
+
+def progress_report(cfg):
+    """Latest persisted evidence, not a canned response or an invented live result."""
+    from datetime import datetime
+    root = cfg.layout.root
+    pieces = ["【最新科研进展】"]
+    notifications = read_jsonl(cfg.layout.state / "human_notifications.jsonl")
+    if notifications:
+        rec = notifications[-1]
+        text = str(rec.get("text", "")).strip()
+        if re.search(r"[\u4e00-\u9fff]", text):
+            pieces.append("最近汇报：" + text[:600])
+        else:
+            pieces.append("最近汇报尚未整理为中文；下面列出已记录的实验结果。")
+        pieces.append("汇报时间：" + str(rec.get("at", "未记录")))
+    outcomes = []
+    for path in cfg.layout.experiments.glob("*/outcome.json"):
+        if path.parent.name.startswith("_"):
+            continue
+        rec = read_json(path, {}) or {}
+        outcomes.append((path.stat().st_mtime, path, rec))
+    for stamp, path, rec in sorted(outcomes, key=lambda item: item[0], reverse=True)[:3]:
+        engineering = {"valid": "运行有效", "invalid": "运行无效"}.get(rec.get("engineering"), "运行有效性未判定")
+        hypothesis = {"supports": "支持假设", "refutes": "反驳假设", "inconclusive": "结论不明确"}.get(rec.get("hypothesis"), "假设未判定")
+        value = {"continue": "继续", "refine": "完善验证", "pivot": "考虑转向", "stop": "建议停止"}.get(rec.get("value"), "待定")
+        pieces.append(f"实验 {path.parent.name}：{engineering}；{hypothesis}；下一步：{value}。")
+        reason = str(rec.get("reason", ""))
+        if re.search(r"[\u4e00-\u9fff]", reason):
+            pieces.append("背景：" + reason[:180])
+        pieces.append("结果时间：" + str(rec.get("at") or datetime.fromtimestamp(stamp).astimezone().isoformat(timespec="seconds")))
+    if not notifications and not outcomes:
+        pieces.append("尚无已记录的进展汇报或实验结论；不能据此判断任务没有运行。")
+    status = read_json(cfg.layout.state / "pi_status.json", {}) or {}
+    stopped = human.stopped(cfg)
+    label = "已设置暂停标记" if stopped else {"running": "上次记录为运行中", "idle": "上次记录为空闲"}.get(status.get("state"), "暂无运行状态记录")
+    pieces.append("PI：" + label + "。")
+    stamp = status.get("finished") or status.get("started")
+    if stamp:
+        pieces.append("状态记录时间：" + str(stamp))
+    state_file = cfg.layout.state / "STATE.md"
+    if state_file.is_file():
+        pieces.append("研究状态文件更新：" + datetime.fromtimestamp(state_file.stat().st_mtime).astimezone().isoformat(timespec="seconds"))
+    pending = actions(cfg)
+    pieces.append(f"待回复事项：{len(pending)} 项（含通知类事项）。")
+    # Surface the current blockers using source-version-bound Chinese copy.
+    decisions = [e for e in events(cfg).values() if e.get("kind") == "action"
+                 and "[BLOCKING]" in e.get("text", "")]
+    for event in sorted(decisions, key=lambda e: e.get("aid", ""), reverse=True)[:3]:
+        copy = event.get("copy") or {}
+        if copy:
+            pieces.append(f"待拍板 {event['aid']}：{copy['summary']} 背景：{copy['background'][:160]}")
+        else:
+            pieces.append(f"待拍板 {event['aid']}：该事项仍未关闭，中文说明待补充。")
+    pieces.append("以上来自项目已落盘记录；实验支持假设不等于已验收结论。")
+    return "\n".join(pieces)
+
+
 def receive(cfg, state, msg):
     """Only called after exact sender authentication. Persist before advancing cursor."""
     text = "\n".join(i.get("text_item", {}).get("text", "") for i in msg.get("item_list", [])
@@ -259,12 +325,13 @@ def receive(cfg, state, msg):
     if key in state.setdefault("received", {}):
         return
     answer = "用法：回复 A编号 校验码 你的决定；留言 你的问题或建议；状态。回复会在下一轮交给 PI，不会直接执行命令。"
-    if text in ("状态", "status"):
-        state["deliveries"] = {}
-        answer = f"Autolab {cfg.layout.root.name}: {len(actions(cfg))} 项待回复；STOP={human.stopped(cfg)}。"
+    if is_progress_query(text):
+        if text in ("状态", "status"):
+            state["deliveries"] = {}
+        answer = progress_report(cfg)
         # Explicit status request also resends outstanding decision cards.
         for e in state.get("events", {}).values():
-            if e.get("kind") == "action" and e.get("aid") in actions(cfg):
+            if text in ("状态", "status") and e.get("kind") == "action" and e.get("aid") in actions(cfg):
                 e["sent"] = False
                 e.pop("next_chunk", None)
     elif text.startswith(("留言 ", "note ")) and text.split(maxsplit=1)[-1].strip():
@@ -290,7 +357,8 @@ def receive(cfg, state, msg):
                     "aid": aid, "version": event["version"], "body": body,
                     "sender": msg["from_user_id"], "at": now_iso(), "status": "queued"}
                 answer = f"已收到 {aid} 的决定，等待下一轮接收。预算与实验验收规则仍然有效。"
-    state["received"][key] = {"text": answer, "sent": False}
+    state["received"][key] = {"text": answer, "sent": False,
+                              "progress_query": is_progress_query(text) and text not in ("状态", "status")}
 
 
 def cycle(cfg, client):
@@ -350,6 +418,8 @@ def cycle(cfg, client):
     def priority(item):
         b, k, _ = item
         event = state[b][k]
+        if b == "received" and event.get("progress_query"):
+            return -1
         is_decision = b == "events" and event["kind"] == "action" and not ("[optional]" in event["text"] and "[other]" in event["text"])
         return 0 if is_decision else (1 if b == "received" else 2)
     outgoing.sort(key=lambda item: (priority(item), state[item[0]][item[1]].get("last_attempt", 0)))

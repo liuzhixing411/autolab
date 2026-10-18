@@ -352,3 +352,34 @@ class Weixin(unittest.TestCase):
         for summary in ("English only", "中" * 101, "第一行\n第二行"):
             with self.assertRaises(ValueError):
                 weixin.summarize(self.cfg, aid, summary, "必要背景。")
+
+    def test_natural_progress_query_reads_latest_records_without_approval(self):
+        human.notify(self.cfg, "进展：完成第一轮验证。背景：仍需扩大样本。")
+        write_json(self.cfg.layout.experiments / "E009" / "outcome.json", {
+            "at": "2026-10-18T09:00:00-04:00", "engineering": "valid",
+            "hypothesis": "inconclusive", "value": "refine", "reason": "误差区间仍偏宽"})
+        aid = human.request_action(self.cfg, "decision", "需要批准下一轮", True)
+        self.client.messages = [self.message("请报告一下最新进展")]
+        weixin.cycle(self.cfg, self.client)
+        answer = self.client.sent[0][0]
+        self.assertIn("完成第一轮验证", answer)
+        self.assertIn("E009", answer)
+        self.assertIn("结论不明确", answer)
+        self.assertIn("2026-10-18", answer)
+        self.assertNotIn("用法：", answer)
+        state = read_json(self.d / "state.json")
+        self.assertFalse(state.get("replies"))
+        self.assertIn(aid, weixin.actions(self.cfg))
+        human.notify(self.cfg, "进展：完成第二轮验证。背景：结果仍待审查。")
+        self.client.messages = [self.message("现在做到哪了", "next")]
+        weixin.cycle(self.cfg, self.client)
+        self.assertIn("完成第二轮验证", self.client.sent[-1][0])
+
+    def test_progress_intent_keeps_explicit_commands_and_empty_state_honest(self):
+        for query in ("进度如何？", "最新结果", "progress", "状态", "请给我报告进展"):
+            self.assertTrue(weixin.is_progress_query(query))
+        for query in ("回复 A001 token 继续报告进展", "留言 请加快进展"):
+            self.assertFalse(weixin.is_progress_query(query))
+        answer = weixin.progress_report(self.cfg)
+        self.assertIn("尚无已记录", answer)
+        self.assertNotIn("已完成", answer)
