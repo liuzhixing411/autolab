@@ -223,7 +223,7 @@ def _claim_gate(cfg: Config, cid: str) -> dict:
                                f"fingerprint {fp['fingerprint'][:16]}). Read claims/{cid}/ and the review; to decide, "
                                f"write 00_human/verdicts/{cid}.toml with grade = \"<A|B|C|D>\" and fingerprint = "
                                f"\"{fp['fingerprint'][:16]}\". Any later change to the claim or its evidence voids it.",
-                               blocking=True, dedupe=f"{fp['fingerprint'][:16]}")
+                               blocking=True, dedupe=f"{fp['fingerprint'][:16]}", rule="claim_verdict")
         else:
             decision = None
         if decision is None:

@@ -82,7 +82,9 @@ def cmd_human(a):
             # the human handed final authority to the PI: log for review, never block
             blocking = False
             text = f"[PI decided under delegation until {deleg['until']}; for human review] {text}"
-        print(human.request_action(cfg, a.kind, text, blocking, dedupe=a.dedupe) or "")
+        print(human.request_action(cfg, a.kind, text, blocking, dedupe=a.dedupe, rule=a.rule,
+                                   recommend=a.recommend, deadline_hours=a.deadline_hours,
+                                   enforce=blocking) or "")
     elif a.action == "uploads":
         _out(human.scan_uploads(cfg))
     elif a.action == "notify":
@@ -276,7 +278,7 @@ def cmd_candidate(a):
 def cmd_outcome(a):
     from autolab import research
     rec = research.record_outcome(_cfg(a), a.eid, a.engineering, a.hypothesis, a.value, a.why,
-                                  [e for e in (a.evidence or "").split(",") if e.strip()], a.usd)
+                                  [e for e in (a.evidence or "").split(",") if e.strip()], a.usd, a.changes_goal)
     _out(rec)
 
 
@@ -317,6 +319,14 @@ def cmd_wake(a):
     if a.action == "mark":
         wake.mark(cfg)
         return 0
+    try:
+        from autolab import autonomy
+        autonomy.adopt_legacy(cfg)
+        sent = autonomy.remind(cfg)               # runner side: reminders cost no API turn
+        if sent:
+            print(f"reminded the human: {', '.join(sent)}")
+    except Exception as e:                     # reminders must never stall the lab
+        print(f"wake: reminder failed ({e})")
     try:
         go, reasons = wake.check(cfg, a.max_idle)
     except Exception as e:                     # never let the check stall the lab
@@ -368,6 +378,11 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--fyi", action="store_true", help="decision requests are blocking unless marked informational")
     s.add_argument("--title", help="short title shown in bold before the text")
     s.add_argument("--dedupe", help="add nothing while an open request contains this text")
+    s.add_argument("--rule", help="blocking: the RULES item or [autonomy] always_ask key this request is about "
+                                  "(budget_increase, gpu, new_data_source, research_goal, mpi_code, ...)")
+    s.add_argument("--recommend", help="blocking: what the PI does if the human does not answer before the deadline")
+    s.add_argument("--deadline-hours", type=float, help="blocking: hours until the recommendation is carried out "
+                                                         "(default [autonomy] decision_timeout_hours)")
     s.set_defaults(fn=cmd_human)
 
     s = sub.add_parser("lit", help="literature index: add | update | text (PDF→text) | note (reading receipt) | list | intake (pdf_drop)")
@@ -485,6 +500,8 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--why", required=True)
     s.add_argument("--evidence", help="comma-separated files")
     s.add_argument("--usd", type=float, help="API cost attributable to this experiment, if known")
+    s.add_argument("--changes-goal", action="store_true", help="pivot/stop that changes the research goal or question "
+                   "(waits for the human); stopping or redirecting a sub-direction is the PI's call")
     s.set_defaults(fn=cmd_outcome)
 
     sub.add_parser("tree", help="write state/TREE.md: experiments as a search tree with outcomes").set_defaults(fn=cmd_tree)

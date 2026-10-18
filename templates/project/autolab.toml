@@ -42,6 +42,22 @@ max_review_rounds = 8
 stall_rounds = 2
 require_reading_receipts_tier = "A"
 
+[autonomy]
+# A blocking request carries the PI's recommendation; with no answer after this many hours the PI
+# carries it out (recorded as decided by timeout, reversed if you disagree later). 0 = wait forever.
+decision_timeout_hours = 4
+# Rules that always wait for you (no timeout). Add your own keys, e.g. "mpi_code".
+always_ask = ["budget_increase", "gpu", "new_data_source", "research_goal"]
+reminder_hours = 4               # re-notify open blocking requests this often
+blocked_max_idle_min = 180       # when only human answers are awaited, forced PI turns this far apart
+
+[weixin.qa]
+# questions sent on Weixin are answered at once by a read-only model run over the project files
+enabled = true
+model = "sonnet"
+usd_per_question = 0.5
+usd_per_day = 5.0
+
 [budget]
 total_usd = 0.0                  # hard cap for the whole run, enforced by scripts/run_pi.sh (0 = no cap)
 usd_per_day = 40.0

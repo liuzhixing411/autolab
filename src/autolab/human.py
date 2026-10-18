@@ -137,10 +137,21 @@ def notify(cfg: Config, text: str) -> None:
         append_jsonl(path, {"at": now_iso(), "text": text.strip()})
 
 def request_action(cfg: Config, kind: str, text: str, blocking: bool = False,
-                   dedupe: str | None = None) -> str | None:
+                   dedupe: str | None = None, rule: str | None = None, recommend: str | None = None,
+                   deadline_hours: float | None = None, enforce: bool = False) -> str | None:
     """Append a request for the human. kind: download | decision | data | approval | other.
-    With `dedupe`, nothing is added while an open request already contains that text."""
+    With `dedupe`, nothing is added while an open request already contains that text.
+    A blocking request carries the PI's recommendation and a deadline (autonomy.py); with
+    `enforce` (the CLI) a missing recommendation is an error."""
+    from autolab import autonomy
     from autolab.util import FileLock, next_id
+    meta = None
+    if blocking:
+        if enforce or rule or recommend:
+            meta = autonomy.plan_request(cfg, rule, recommend, deadline_hours)
+        else:
+            meta = {"rule": "", "recommend": "", "deadline": None}
+        text = text.strip() + " " + autonomy.suffix(meta)
     with FileLock(cfg.layout.action_needed):
         if dedupe and any(dedupe in line for line in open_actions(cfg)):
             return None
@@ -148,6 +159,8 @@ def request_action(cfg: Config, kind: str, text: str, blocking: bool = False,
         tag = "BLOCKING" if blocking else "optional"
         with cfg.layout.action_needed.open("a", encoding="utf-8", newline="\n") as f:
             f.write(f"- [ ] **{aid}** [{tag}] [{kind}] {text.strip()}  _(added {now_iso()})_\n")
+    if meta is not None:
+        autonomy.register(cfg, aid, meta)
     return aid
 
 

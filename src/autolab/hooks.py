@@ -31,9 +31,10 @@ APPEND_ONLY = ("state/DECISIONS.md",)
 # records only autolab commands write: the frozen evaluator, outcomes, lessons, spend and call logs
 CLI_OWNED = re.compile(r"^(experiments/[^/]+/(evaluator\.json|outcomes?\.jsonl?|outcome\.json|submission_pending\.json|plan_gate\.json|jobs(?:_usage)?\.jsonl)|"
                        r"claims/[^/]+/(reviews|gate)\.json|state/reviews/.*|"
-                       r"experience/lessons\.jsonl|state/(calls|budget)\.jsonl)$")
+                       r"experience/lessons\.jsonl|state/(calls|budget)\.jsonl|state/requests\.json)$")
 _CLI_OWNED_TEXT = ("evaluator.json", "outcome.json", "outcomes.jsonl", "lessons.jsonl", "calls.jsonl", "budget.jsonl",
-                   "plan_gate.json", "jobs.jsonl", "jobs_usage.jsonl", "submission_pending.json", "reviews.json", "state/reviews/")
+                   "plan_gate.json", "jobs.jsonl", "jobs_usage.jsonl", "submission_pending.json", "reviews.json", "state/reviews/",
+                   "state/requests.json")
 _AUTOLAB_CMD = re.compile(r"^\s*(autolab|python3?\s+-m\s+autolab|\S*python\S*\s+-m\s+autolab)\b")
 _RAW_SLURM = re.compile(r"(^|[;&|`(]\s*|\s)(sbatch|scancel)\b")
 _SEGMENT_SPLIT = re.compile(r"&&|\|\||;|\||\n")

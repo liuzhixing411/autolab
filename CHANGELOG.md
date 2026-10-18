@@ -1,5 +1,27 @@
 # Changelog
 
+## 0.6.0 — 2026-10-18
+
+More autonomy for the PI. In the first test run three tracks sat idle for 37 hours behind
+blocking requests without a deadline, and six Weixin answers were dropped on format:
+- **Deadlines on blocking requests** (`autonomy.py`): `autolab human request --blocking` needs `--rule` and
+  `--recommend`; without an answer after `[autonomy] decision_timeout_hours` (default 4) the tick closes the
+  request, records the decision `by timeout`, notifies the human, and the PI carries out its recommendation
+  (reversed if the human disagrees later). Keys in `[autonomy] always_ask` (default budget_increase, gpu,
+  new_data_source, research_goal) and framework claim-verdict / integrity requests never time out.
+  Requests filed before 0.6 get a deadline from deployment.
+- **Narrower human gates**: stopping or redirecting a sub-direction (`autolab outcome ... --value stop|pivot`)
+  is the PI's decision and only notifies; `--changes-goal` waits for the human. Drafting reports needs no
+  approval; only the final version does. One blocking request = one gated action; everything else moves on.
+- **Waiting costs less**: the wake check wakes on expired deadlines, forces turns only every
+  `blocked_max_idle_min` (180) while nothing but human answers is awaited, and reminds the human every
+  `reminder_hours` (runner side, no API turn).
+- **Weixin**: no confirmation code; an A-number anywhere in a message answers that request, later messages
+  correct earlier ones, plan changes no longer void answers, replies to closed requests and any other text
+  reach the PI as notes, receipts repeat how a message was understood. Questions are answered within one
+  or two minutes by a read-only `claude -p` run over the project files (`[weixin.qa]`, at most 0.5 USD per
+  answer and 5 USD per day, charged to the budget). Claim grades stay bound to the claim version shown.
+
 ## 0.5.0 — 2026-10-17
 
 Research steering, adapted from tree-search and hypothesis-tournament systems but kept auditable:

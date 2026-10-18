@@ -1103,6 +1103,9 @@ class TickAndCli(unittest.TestCase):
     def test_decision_requests_block_by_default(self):
         rc, out = run_cli("--project", str(self.root), "human", "request", "--kind", "decision",
                           "--title", "Stop or modify?", "E003 slower than baseline")
+        self.assertEqual(rc, 1)                                              # blocking needs a recommendation
+        rc, out = run_cli("--project", str(self.root), "human", "request", "--kind", "decision", "--rule", "goal-adjacent",
+                          "--recommend", "stop E003", "--title", "Stop or modify?", "E003 slower than baseline")
         line = [l for l in human.open_actions(self.cfg) if "Stop or modify?" in l][0]
         self.assertIn("[BLOCKING]", line)
         run_cli("--project", str(self.root), "human", "request", "--kind", "decision", "--fyi", "just so you know")
@@ -1367,7 +1370,7 @@ class ResearchSteering(unittest.TestCase):
             "## Discrimination\nSeparates A from B because they predict opposite signs of the drift.\n"
             "If it supports A we scale up; if it refutes A we drop the method.\n"), [])
 
-    def test_outcome_layers_and_pivot_goes_to_human(self):
+    def test_outcome_layers_and_only_goal_changes_wait(self):
         passing_plan(self.cfg)
         with self.assertRaises(ValueError):                                  # invalid run, research conclusion
             research.record_outcome(self.cfg, "E001", "invalid", "refutes", "refine", "OOM")
@@ -1375,17 +1378,24 @@ class ResearchSteering(unittest.TestCase):
             research.record_outcome(self.cfg, "E001", "invalid", "n/a", "stop", "OOM")
         rec = research.record_outcome(self.cfg, "E001", "invalid", "n/a", "refine", "node ran out of memory")
         self.assertFalse(rec.get("needs_human"))
+        # stopping or redirecting a sub-direction is the PI's call: a notification, no request
         rec = research.record_outcome(self.cfg, "E001", "valid", "refutes", "pivot", "slope 0.1, far below",
                                       ["experiments/E001/plan.md"])
-        self.assertTrue(rec["needs_human"])
-        acts = human.open_actions(self.cfg)
-        self.assertTrue(any("BLOCKING" in a and "PIVOT" in a for a in acts), acts)
+        self.assertFalse(rec.get("needs_human"))
+        self.assertEqual(human.open_actions(self.cfg), [])
+        notes = read_jsonl(self.cfg.layout.state / "human_notifications.jsonl")
+        self.assertIn("PI 已决定转向 E001", notes[-1]["text"])
         self.assertIn("E001 outcome", (self.cfg.layout.state / "DECISIONS.md").read_text(encoding="utf-8"))
         self.assertEqual(len(read_jsonl(self.cfg.layout.experiments / "E001" / "outcomes.jsonl")), 2)
-        write(self.cfg.layout.human / "DELEGATED", 'until = "2999-01-01T00:00:00"\nto = "pi"\n')
-        rec = research.record_outcome(self.cfg, "E001", "valid", "refutes", "stop", "confirmed twice")
-        self.assertFalse(rec.get("needs_human"))
-        self.assertTrue(any("delegation" in a and "optional" in a for a in human.open_actions(self.cfg)))
+        # changing the research goal waits for the human, without a timeout (always_ask)
+        rec = research.record_outcome(self.cfg, "E001", "valid", "refutes", "stop", "goal is covered by L0005",
+                                      changes_goal=True)
+        self.assertTrue(rec["needs_human"])
+        acts = human.open_actions(self.cfg)
+        self.assertTrue(any("BLOCKING" in a and "no timeout" in a for a in acts), acts)
+        from autolab import autonomy
+        aid = autonomy.blocked(self.cfg)[0]
+        self.assertIsNone(autonomy.read_registry(self.cfg)[aid]["deadline"])
 
     def test_frozen_evaluator_needs_amendment(self):
         passing_plan(self.cfg)
@@ -1513,6 +1523,105 @@ class ResearchSteering(unittest.TestCase):
         self.assertEqual(rc, 0)
         rc, out = run_cli("--project", str(self.root), "candidate", "list")
         self.assertIn("H7 [open]", out)
+
+
+class Autonomy(unittest.TestCase):
+    """Blocking requests carry a recommendation and time out; reminders; wake behaviour."""
+
+    def setUp(self):
+        self.root, self.cfg = make_project()
+        from autolab import autonomy
+        self.autonomy = autonomy
+
+    def _expire(self, aid):
+        reg = self.autonomy.read_registry(self.cfg)
+        reg[aid]["deadline"] = "2000-01-01T00:00:00+00:00"
+        write_json(self.cfg.layout.state / "requests.json", reg)
+
+    def test_blocking_request_needs_recommendation_unless_always_ask(self):
+        rc, _ = run_cli("--project", str(self.root), "human", "request", "--kind", "decision", "--blocking",
+                        "--rule", "pilot", "Run the L8 pilot?")
+        self.assertEqual(rc, 1)                                              # no --recommend
+        rc, out = run_cli("--project", str(self.root), "human", "request", "--kind", "decision", "--blocking",
+                          "--rule", "pilot", "--recommend", "run the 8 core-hour pilot", "Run the L8 pilot?")
+        self.assertEqual(rc, 0)
+        aid = out.strip()
+        meta = self.autonomy.read_registry(self.cfg)[aid]
+        self.assertTrue(meta["deadline"])
+        line = next(a for a in human.open_actions(self.cfg) if aid in a)
+        self.assertIn("PI recommends: run the 8 core-hour pilot", line)
+        rc, out = run_cli("--project", str(self.root), "human", "request", "--kind", "decision", "--blocking",
+                          "--rule", "gpu", "Use two GPU nodes?")
+        self.assertEqual(rc, 0)
+        self.assertIsNone(self.autonomy.read_registry(self.cfg)[out.strip()]["deadline"])
+
+    def test_timeout_closes_request_records_decision_and_notifies(self):
+        aid = human.request_action(self.cfg, "decision", "Draft the report now or after L8?", True,
+                                   rule="report", recommend="draft now, add L8 later", enforce=True)
+        forever = human.request_action(self.cfg, "decision", "Raise budget to 600 USD?", True,
+                                       rule="budget_increase", enforce=True)
+        self.assertEqual(self.autonomy.overdue(self.cfg), [])
+        self._expire(aid)
+        self.assertEqual(self.autonomy.overdue(self.cfg), [aid])
+        res = tick.run(self.cfg)
+        digest = Path(res["digest"]).read_text(encoding="utf-8")
+        self.assertIn("timed out", digest)
+        self.assertIn("draft now, add L8 later", digest)
+        acts = human.open_actions(self.cfg)
+        self.assertFalse(any(aid in a for a in acts))
+        self.assertTrue(any(forever in a for a in acts))                    # always_ask: still waiting
+        self.assertIn("— timeout", (self.cfg.layout.state / "DECISIONS.md").read_text(encoding="utf-8"))
+        self.assertIn("超时", read_jsonl(self.cfg.layout.state / "human_notifications.jsonl")[-1]["text"])
+        self.assertEqual(self.autonomy.process(self.cfg), [])               # only once
+
+    def test_legacy_requests_adopt_deadline_and_framework_requests_wait(self):
+        with open(self.cfg.layout.action_needed, "a", encoding="utf-8") as f:
+            f.write("- [ ] **A101** [BLOCKING] [decision] Approve the writing stage? PI recommends (a).\n")
+            f.write("- [ ] **A102** [BLOCKING] [decision] Claim C001: write 00_human/verdicts/C001.toml\n")
+        self.assertEqual(sorted(self.autonomy.adopt_legacy(self.cfg)), ["A101", "A102"])
+        reg = self.autonomy.read_registry(self.cfg)
+        self.assertTrue(reg["A101"]["deadline"])
+        self.assertIsNone(reg["A102"]["deadline"])
+        self.assertEqual(self.autonomy.adopt_legacy(self.cfg), [])
+
+    def test_wake_on_deadline_and_longer_idle_when_blocked(self):
+        from autolab import wake
+        human.check_changes(self.cfg, now=time.time() + 3600)                 # settle and acknowledge the setup
+        human.ack(self.cfg, "read")
+        wake.mark(self.cfg)
+        snap = read_json(self.cfg.layout.state / "wake.json")
+        snap["t"] -= 60 * 60                                                 # last turn an hour ago
+        write_json(self.cfg.layout.state / "wake.json", snap)
+        go, reasons = wake.check(self.cfg, 45)
+        self.assertTrue(any("no PI turn" in r for r in reasons))
+        aid = human.request_action(self.cfg, "decision", "x?", True, rule="r", recommend="do y", enforce=True)
+        go, reasons = wake.check(self.cfg, 45)
+        self.assertFalse(go, reasons)                                       # only waiting: 180 min apart
+        self._expire(aid)
+        go, reasons = wake.check(self.cfg, 45)
+        self.assertTrue(any("past their deadline" in r for r in reasons))
+
+    def test_agents_cannot_edit_the_deadline_registry(self):
+        d = lambda tool, **inp: hooks.decide({"tool_name": tool, "tool_input": inp}, self.root)[0]
+        self.assertFalse(d("Edit", file_path="state/requests.json"))
+        self.assertFalse(d("Bash", command="echo {} > state/requests.json"))
+        self.assertTrue(d("Bash", command="cat state/requests.json"))
+
+    def test_reminders(self):
+        aid = human.request_action(self.cfg, "decision", "x?", True, rule="r", recommend="do y", enforce=True)
+        self.assertEqual(self.autonomy.remind(self.cfg), [])
+        reg = self.autonomy.read_registry(self.cfg)
+        reg[aid]["reminded"] = "2000-01-01T00:00:00+00:00"
+        write_json(self.cfg.layout.state / "requests.json", reg)
+        self.assertEqual(self.autonomy.remind(self.cfg), [aid])
+        self.assertIn("提醒", read_jsonl(self.cfg.layout.state / "human_notifications.jsonl")[-1]["text"])
+        self.assertEqual(self.autonomy.remind(self.cfg), [])
+
+    def test_protocol_names_always_ask_and_timeout(self):
+        text = (self.root / "CLAUDE.md").read_text(encoding="utf-8")
+        self.assertIn("budget_increase, gpu, new_data_source, research_goal", text)
+        self.assertIn("times out after 4 h", text)
+        self.assertNotIn("{{", text)
 
 
 if __name__ == "__main__":

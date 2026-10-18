@@ -210,7 +210,7 @@ def experiment_version(cfg: Config, eid: str) -> str:
 
 
 def record_outcome(cfg: Config, eid: str, engineering: str, hypothesis: str, value: str, reason: str,
-                   evidence: list[str] | None = None, usd: float | None = None) -> dict:
+                   evidence: list[str] | None = None, usd: float | None = None, changes_goal: bool = False) -> dict:
     exp = cfg.layout.experiments / eid
     if not (exp / "plan.md").is_file():
         raise FileNotFoundError(f"{eid}: no plan.md")
@@ -259,17 +259,20 @@ def record_outcome(cfg: Config, eid: str, engineering: str, hypothesis: str, val
                  reason, ", ".join(evidence or []))
     rec["decision"] = did
     if value in ("pivot", "stop"):
+        # stopping or redirecting a sub-direction is the PI's call (human, 2026-10-18); only a change of
+        # the research goal or question waits for the human
         from autolab import human
-        deleg = human.delegation(cfg)
-        text = (f"{eid}: the PI proposes to {value.upper()} this line (hypothesis {hypothesis}). Reason: {reason.strip()} "
-                f"Evidence: {', '.join(evidence or []) or 'see outcome.json'}. Decision {did}.")
-        if deleg:
-            human.request_action(cfg, "decision", f"[PI decided under delegation until {deleg['until']}; for human "
-                                 f"review] {text}", blocking=False)
-        else:
-            human.request_action(cfg, "decision", text + " RULES: a stop or major pivot needs your approval.",
-                                 blocking=True, dedupe=f"{eid}: the PI proposes to {value.upper()}")
+        verb = {"stop": "停止", "pivot": "转向"}[value]
+        if changes_goal:
+            text = (f"{eid}: the PI proposes to {value.upper()} and change the research goal or question "
+                    f"(hypothesis {hypothesis}). Reason: {reason.strip()} Evidence: "
+                    f"{', '.join(evidence or []) or 'see outcome.json'}. Decision {did}.")
+            human.request_action(cfg, "decision", text, blocking=True, rule="research_goal",
+                                 dedupe=f"{eid}: the PI proposes to {value.upper()}")
             rec["needs_human"] = True
+        else:
+            human.notify(cfg, f"PI 已决定{verb} {eid} 这条子方向（研究目标不变），不同意请直接回复。"
+                              f"背景：{reason.strip()[:300]}")
     return rec
 
 

@@ -1,7 +1,8 @@
 # Personal Weixin: human decisions and major research progress
 
 This optional bridge connects the **existing** Autolab human workflow to a personal
-Weixin bot conversation. It uses HTTPS directly, makes no model calls, and needs no
+Weixin bot conversation. It uses HTTPS directly, makes no model calls except the optional
+read-only question answering (see Phone interaction), and needs no
 public callback URL or OpenClaw installation. It is an Autolab implementation of the
 [Tencent-published iLink protocol](https://github.com/Tencent/openclaw-weixin/blob/main/docs/protocol_zh_CN.md),
 not a Tencent-supported SDK. The baseline is channel protocol 2.4.8. Account eligibility,
@@ -35,7 +36,7 @@ all open requests. Start it before the research runner. Routine ticks and runnin
 polls do not generate messages. The listener must remain running for delivery.
 
 Notifications are packed by priority: open decisions first, reply receipts second,
-then a progress digest. Each decision keeps its own reply code; its original full
+then a progress digest. Each decision shows its deadline and how to answer; its original full
 text remains in ACTION_NEEDED.md while the phone shows the concise Chinese copy.
 Progress entries use concise Chinese summaries and background; full records stay
 in the project. A digest is at most one group every 30 minutes. Any notification
@@ -85,31 +86,51 @@ is required when Weixin is unused: the added import step is a no-op.
 
 ## Phone interaction
 
-Copy the request number and confirmation code from the notification:
+Write naturally; nothing you send is dropped:
 
 ```text
-回复 A016 ab12cd34 同意先做小规模对照；不要启动完整扫描
-回复 A017 ef56ab78 不同意换方向，先排查边界条件
-留言 F003 的提升能否由参数量差异解释？
-状态
+A016 同意先做小规模对照；不要启动完整扫描
+同意A017
+更正 A017 不同意换方向，先排查边界条件
+为什么 E013 停了？
+这个方向先放一放，优先真实算例
+进展
 ```
 
-Only the exact QR-bound sender is accepted. Plain `同意` is deliberately insufficient:
-several decisions may be pending. Codes expire after seven days and are renewed.
-`状态` resends outstanding decision cards. `留言` creates a general human inbox note
-without closing any decision request. The PI reads it and uses `human notify` to reply.
+Only the exact QR-bound sender is accepted.
+
+- **Decisions**: a message that names an open request (`A` plus its number, anywhere in the
+  text) is the answer to it. No confirmation code is needed (old-style codes are ignored).
+  A later message about the same request corrects the earlier one (`更正 A017 …`); the PI
+  follows the latest. The receipt repeats how the message was understood.
+- **A plan change does not void your answer.** Answers are bound to the request itself. If
+  the request text changed after you answered, the PI is told to check that the answer
+  still fits. A request that was closed meanwhile (answered or timed out) still receives
+  your message as a note, and the PI follows you if it differs from what was done.
+- **Questions** (`为什么`, `怎么`, `是否`, a question mark, …) are answered within one or two
+  minutes by a read-only model run over the project files (`[weixin.qa]` in autolab.toml:
+  model, at most `usd_per_question` per answer and `usd_per_day` per day, charged to the
+  budget). It can only read files: no shell, no writes, no web, credentials denied, and the
+  project protocol is not loaded. The question also goes to the PI as a note.
+- **Anything else** becomes a note to the PI, which replies with `human notify`.
+- `进展` / `状态` / `做到哪了` returns the latest recorded progress; `状态` also resends
+  open decision cards.
+
+Unanswered blocking requests are carried out after `[autonomy] decision_timeout_hours`
+(default 4) with the PI's recommendation, except the keys in `[autonomy] always_ask`; each
+card shows the deadline, and you are reminded every `reminder_hours`.
 
 For a claim-grade disagreement notification, an explicit response such as
-`回复 A018 1234abcd 评级 B` also writes `00_human/verdicts/Cxxx.toml`, binding the
-grade to the current claim fingerprint. The normal claim gate still has to run.
-Other decisions become inbox instructions; an answer closes a request because it was
-answered, **not because the answer grants permission**. A refusal must be respected.
+`A018 评级 B` also writes `00_human/verdicts/Cxxx.toml`, binding the grade to the claim
+version you were shown; if the claim changed after the notification, the grade is not
+recorded (you are told) and your message is delivered as a note. The normal claim gate
+still has to run. An answer closes a request because it was answered, **not because the
+answer grants permission**. A refusal must be respected.
 
 Two acknowledgements distinguish receipt from application:
 
-1. The listener durably queues your reply and acknowledges receipt.
-2. The runner imports it between turns; the listener reports whether it was applied or
-   rejected because the plan changed. The PI processes the inbox in a subsequent turn.
+1. The listener durably queues your message and acknowledges receipt.
+2. The runner imports it between turns and reports that it reached the PI.
 
 This does not interrupt a running model turn or cluster job. Latency includes the
 current turn, runner interval, and configured human-edit debounce (default five minutes).

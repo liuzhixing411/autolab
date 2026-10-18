@@ -210,6 +210,10 @@ def _write_claude_md(cfg: Config) -> None:
             .replace("{{DOMAIN}}", cfg.domain_name)
             .replace("{{DOMAIN_TITLE}}", cfg.domain.get("domain", {}).get("title", cfg.domain_name))
             .replace("{{FIELD_NOTES}}", "DOMAIN_NOTES.md"))
+    from autolab import autonomy
+    a = autonomy.settings(cfg)
+    text = (text.replace("{{ALWAYS_ASK}}", ", ".join(a["always_ask"]) or "none")
+            .replace("{{TIMEOUT_H}}", f"{a['timeout_h']:g}" if a["timeout_h"] else "never (timeouts are off)"))
     write_atomic(cfg.layout.root / "CLAUDE.md", text + _site_notes(cfg))
 
 

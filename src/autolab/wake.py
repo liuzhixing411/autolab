@@ -46,6 +46,16 @@ def check(cfg: Config, max_idle_min: float = 45, now: float | None = None) -> tu
     if not snap:
         return True, ["no previous snapshot"]
     reasons = []
+    from autolab import autonomy
+    late = autonomy.overdue(cfg)
+    if late:
+        reasons.append(f"human requests past their deadline: {late}")
+    jobs = _jobs(cfg)
+    from autolab.slurm import TERMINAL
+    if autonomy.blocked(cfg) and not any(st not in TERMINAL
+                                         for st in jobs.values()):
+        # everything waits on the human: forced turns would only re-read the same blockers
+        max_idle_min = max(max_idle_min, autonomy.settings(cfg)["blocked_max_idle_min"])
     if now - snap.get("t", 0) > max_idle_min * 60:
         reasons.append(f"no PI turn for more than {max_idle_min:.0f} min")
     hc = human.check_changes(cfg, now=now, commit=False)
@@ -57,7 +67,7 @@ def check(cfg: Config, max_idle_min: float = 45, now: float | None = None) -> tu
     for k, m in _escalations(cfg).items():
         if snap.get("escalations", {}).get(k) != m:
             reasons.append(f"escalation: {k}")
-    for j, st in _jobs(cfg).items():
+    for j, st in jobs.items():
         if snap.get("jobs", {}).get(j) != st:
             reasons.append(f"job {j}: {snap.get('jobs', {}).get(j)} -> {st}")
     return bool(reasons), reasons

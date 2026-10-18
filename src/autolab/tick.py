@@ -49,6 +49,9 @@ def run(cfg: Config) -> dict:
 
     changes = human.check_changes(cfg)
     answered = human.resolve_from_inbox(cfg) if not changes["settling"] else []
+    from autolab import autonomy
+    autonomy.adopt_legacy(cfg)               # old blocking requests get a deadline from now
+    timed_out = autonomy.process(cfg)        # overdue requests: the PI carries out its recommendation
     ups = human.scan_uploads(cfg)
     pdfs = knowledge.intake_pdf_drop(cfg)
     cards = _new_handoffs(cfg)
@@ -87,6 +90,10 @@ def run(cfg: Config) -> dict:
               "Read the changed files, re-plan if needed, then `autolab human ack \"what you did\"`.", ""]
     if changes["settling"]:
         L += [f"_Human is still editing: {', '.join(changes['settling'])} (not applied yet)._", ""]
+    if timed_out:
+        L += ["## Requests that timed out (no human answer before the deadline): carry out your recommendation now"]
+        L += [f"- {t['aid']}: {t['recommend']} (recorded as {t['decision']}, by timeout). If the human disagrees "
+              "later, reverse it." for t in timed_out] + [""]
     if answered:
         L += ["## Requests answered by the human (inbox)"] + [f"- {a}: read `{f}` and act on it" for a, f in answered] + [""]
     unfilled = human.unfilled_templates(cfg)
@@ -151,7 +158,10 @@ def run(cfg: Config) -> dict:
         L.append("")
     actions = human.open_actions(cfg)
     if actions:
-        L += [f"## Open requests to the human: {len(actions)} (see 00_human/ACTION_NEEDED.md)", ""]
+        reg = autonomy.read_registry(cfg)
+        L += [f"## Open requests to the human: {len(actions)} (see 00_human/ACTION_NEEDED.md)"]
+        L += [f"- {a}: waits until {reg.get(a, {}).get('deadline') or 'answered (no timeout)'}" for a in autonomy.blocked(cfg)]
+        L += ["Blocked lines do not stop the others: keep every track that does not depend on these requests moving.", ""]
     L += ["## Human notification copy", "Use `autolab human summaries` and fill missing concise Chinese copy with `autolab human summarize <key-or-A-id> --summary ... --background ...`. One sentence for the decision/progress, then necessary evidence, options and caveats. Do not send long English records.", ""]
     path = cfg.layout.digests / f"TICK-{counter:04d}.md"
     write_atomic(path, "\n".join(L) + "\n")

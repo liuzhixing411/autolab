@@ -1,4 +1,5 @@
-"""Human-operated Weixin bridge. No model calls and no execution of chat text.
+"""Human-operated Weixin bridge. Chat text is never executed; the only model call is the optional
+read-only question answering (`qa_step`), capped per question and per day.
 
 The listener keeps credentials/replies outside the project. The runner imports replies
 between turns, before its integrity snapshot. See docs/WEIXIN.md for deployment limits.
@@ -24,6 +25,10 @@ VERSION = "2.4.8"  # protocol baseline, not the Autolab package version
 MESSAGE_LIMIT = 2800
 SEND_INTERVAL = 60
 PROGRESS_INTERVAL = 1800
+# an A-number anywhere in a message ("同意A030", "A029 选a"); Chinese letters count as \w, so no \b
+AID = re.compile(r"(?<![A-Za-z0-9])[Aa](\d{3,})(?!\d)")
+QUESTION = ("?", "？", "为什么", "为何", "怎么", "如何", "是否", "能不能", "能否", "有没有", "什么", "哪", "多少",
+            "吗", "呢", "原因", "解释", "说明一下", "why", "how", "what")
 
 
 class ILinkError(RuntimeError):
@@ -151,9 +156,10 @@ def actions(cfg):
 
 
 def action_version(cfg, line):
-    # Conservative: any plan/config/human-rule change invalidates an old decision.
-    paths = [cfg.layout.root / "autolab.toml", *cfg.layout.human_docs]
-    paths += sorted(cfg.layout.experiments.glob("*/plan.md"))
+    # The request itself (and, for a grade, the claim it grades). Binding every plan and config file
+    # here voided the human's answers whenever the PI wrote any new plan (first-test, 2026-10-18:
+    # six Weixin replies lost); the PI now judges whether an answer still fits a changed situation.
+    paths = []
     claim = verdict_claim(line)
     fp = None
     if claim:
@@ -237,10 +243,13 @@ def render_event(cfg, e):
     ident = e.get("aid", "")
     text = f"【{label}{' ' + ident if ident else ''}】\n{summary}\n背景：{background}"
     if action and not informative:
-        if copy or not background.endswith("请勿仅凭这条提示批准操作。"):
-            text += f"\n回复：回复 {e['aid']} {e['token']} 你的决定"
-            if verdict_claim(e["text"]):
-                text += "\n等级裁定请写：评级 A/B/C/D（选择一个）。"
+        from autolab import autonomy
+        deadline = autonomy.read_registry(cfg).get(e["aid"], {}).get("deadline")
+        if deadline:
+            text += f"\n{deadline[5:10]} {deadline[11:16]} 前不回复，PI 将按推荐方案执行。"
+        text += f"\n回复：直接发“{e['aid']} 你的决定”（随时可发“更正 {e['aid']} …”）"
+        if verdict_claim(e["text"]):
+            text += "\n等级裁定请写：评级 A/B/C/D（选择一个）。"
     else:
         text += "\n无需回复；有建议可发送“留言 你的建议”。"
     return text
@@ -250,10 +259,103 @@ def render_event(cfg, e):
 def is_progress_query(text):
     """Read-only intent; decision/note commands must retain their explicit semantics."""
     normalized = re.sub(r"[\s，。！？?！,.]+", "", text).lower()
-    if normalized.startswith(("回复", "reply", "留言", "note")):
+    if normalized.startswith(("回复", "reply", "留言", "note", "更正")) or AID.search(text):
         return False
+    if any(w in normalized for w in ("为什么", "为何", "原因", "怎么回事")):
+        return False                              # a real question: answered from the records (qa)
     return (normalized in ("状态", "status", "progress", "update") or
             any(word in normalized for word in ("进展", "进度", "做到哪", "做得怎么样", "结果怎么样", "最新结果")))
+
+
+def is_question(text):
+    t = text.lower()
+    return any(w in t for w in QUESTION)
+
+
+def qa_settings(cfg):
+    q = (cfg.data.get("weixin", {}) or {}).get("qa", {}) or {}
+    return {"enabled": bool(q.get("enabled", True)), "model": str(q.get("model", "sonnet")),
+            "usd_per_question": float(q.get("usd_per_question", 0.5)), "usd_per_day": float(q.get("usd_per_day", 5.0)),
+            "timeout_s": float(q.get("timeout_s", 300)), "command": str(q.get("command", "claude"))}
+
+
+QA_PROMPT = """你是 autolab 自主科研项目的只读问答助手。项目目录：{root}
+只根据项目文件回答人类的问题。先看 state/STATE.md、state/DECISIONS.md（末尾最新）、state/TREE.md、
+00_human/ACTION_NEEDED.md、findings/、experiments/*/outcome.json，需要时再看其它文件。
+要求：中文，不超过 400 字；先给直接答案，再给依据（实验/结论/决定编号或文件名）；没有依据就说不确定，
+不要编造数字；不要给出命令或代码；不要替 PI 做决定，需要人类拍板的事项直接说明编号和选项。
+问题：{question}"""
+
+
+def _qa_spent_today(cfg):
+    today = now_iso()[:10]
+    return sum(float(r.get("usd") or 0) for r in read_jsonl(cfg.layout.state / "budget.jsonl")
+               if r.get("source") == "weixin_qa" and str(r.get("at", ""))[:10] == today)
+
+
+def qa_step(cfg, state):
+    """Start queued questions as read-only `claude -p` runs and collect finished answers.
+    Runs in its own process group and directory: no project CLAUDE.md, no write or shell tools,
+    credentials denied; each answer costs at most usd_per_question, the day at most usd_per_day."""
+    import os
+    import shutil
+    import subprocess
+    s = qa_settings(cfg)
+    qdir = directory(cfg) / "qa"
+    for key, q in state.get("questions", {}).items():
+        out = qdir / f"{key}.json"
+        if q["status"] == "queued":
+            from autolab import budget
+            if not s["enabled"] or shutil.which(s["command"]) is None:
+                q["status"] = "skipped"
+                why = "即时问答未启用"
+            elif budget.status(cfg)["over"] or _qa_spent_today(cfg) + s["usd_per_question"] > s["usd_per_day"]:
+                q["status"] = "skipped"
+                why = "今天的即时问答额度已用完"
+            else:
+                qdir.mkdir(parents=True, exist_ok=True)
+                settings = qdir / "settings.json"
+                home = Path.home().as_posix().lstrip("/")
+                write_json(settings, {"permissions": {"deny": [
+                    f"Read(//{home}/.ssh/**)", f"Read(//{home}/.codex/**)", f"Read(//{home}/.claude/.credentials.json)",
+                    f"Read(//{home}/.cache/autolab/**)", f"Read(//{home}/.config/**)", "Bash", "Write", "Edit",
+                    "WebFetch", "WebSearch"]}})
+                args = ([shutil.which("timeout"), f"{int(s['timeout_s'])}"] if shutil.which("timeout") else [])
+                args += [s["command"], "-p", QA_PROMPT.format(root=cfg.layout.root.resolve(), question=q["text"][:1500]),
+                        "--model", s["model"], "--output-format", "json", "--max-turns", "20",
+                        "--max-budget-usd", f"{s['usd_per_question']:.2f}", "--add-dir", str(cfg.layout.root.resolve()),
+                        "--allowedTools", "Read,Grep,Glob", "--settings", str(settings),
+                        "--disallowedTools", "Bash,Write,Edit,MultiEdit,NotebookEdit,WebFetch,WebSearch,Agent,Task"]
+                subprocess.Popen(["sh", "-c", 'out="$1"; shift; "$@" > "$out.part" 2> "$out.err"; mv "$out.part" "$out"',
+                                  "sh", str(out), *args], cwd=qdir, start_new_session=True,
+                                 stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                 env={**os.environ, "CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS": "0"})
+                q.update(status="running", started=time.time())
+                continue
+            state["received"]["qa-" + key] = {"text": f"{why}；问题已转给 PI，下一轮回复。", "sent": False,
+                                              "progress_query": True}
+        elif q["status"] == "running":
+            if out.is_file():
+                try:
+                    res = json.loads(out.read_text(encoding="utf-8"))
+                except json.JSONDecodeError:
+                    res = {"is_error": True, "result": ""}
+                usd = res.get("total_cost_usd")
+                from autolab import budget
+                # a run without a cost report is charged its cap (an unknown charge would reserve a PI turn)
+                budget.record_cost(cfg, "weixin_qa", usd if usd is not None else s["usd_per_question"],
+                                   {"question": key, "estimated": usd is None})
+                budget.record_call(cfg, "weixin_qa", "error" if res.get("is_error") else "ok", [s["model"]],
+                                   res.get("usage") or {}, usd, round(time.time() - q["started"], 1), key)
+                answer = str(res.get("result") or "").strip()
+                text = ("【即时回答 · 只读查阅项目记录，可能不完整】\n" + answer[:MESSAGE_LIMIT - 200]
+                        if answer and not res.get("is_error") else "这次没能从项目记录里查到答案；问题已转给 PI，下一轮回复。")
+                state["received"]["qa-" + key] = {"text": text, "sent": False, "progress_query": True}
+                q["status"] = "done"
+            elif time.time() - q.get("started", 0) > s["timeout_s"]:
+                q["status"] = "timeout"
+                state["received"]["qa-" + key] = {"text": "查阅超时；问题已转给 PI，下一轮回复。", "sent": False,
+                                                  "progress_query": True}
 
 
 def progress_report(cfg):
@@ -324,7 +426,7 @@ def receive(cfg, state, msg):
     key = digest([msg.get("from_user_id"), mid])
     if key in state.setdefault("received", {}):
         return
-    answer = "用法：回复 A编号 校验码 你的决定；留言 你的问题或建议；状态。回复会在下一轮交给 PI，不会直接执行命令。"
+    answer = None
     if is_progress_query(text):
         if text in ("状态", "status"):
             state["deliveries"] = {}
@@ -334,29 +436,45 @@ def receive(cfg, state, msg):
             if text in ("状态", "status") and e.get("kind") == "action" and e.get("aid") in actions(cfg):
                 e["sent"] = False
                 e.pop("next_chunk", None)
-    elif text.startswith(("留言 ", "note ")) and text.split(maxsplit=1)[-1].strip():
-        state.setdefault("replies", {})[key] = {
-            "aid": "NOTE", "version": None, "body": text.split(maxsplit=1)[1],
-            "sender": msg["from_user_id"], "at": now_iso(), "status": "queued"}
-        answer = "留言已收到，下一轮交给 PI；留言不会代替待拍板事项的明确回复。"
     else:
-        parts = text.split(maxsplit=3)
-        if len(parts) == 4 and parts[0] in ("回复", "reply"):
-            _, aid, token, body = parts
-            event = next((e for e in state.get("events", {}).values()
-                          if e.get("aid") == aid and e.get("token") == token and e.get("sent")), None)
-            line = actions(cfg).get(aid)
-            if (not event or not line or action_version(cfg, line) != event["version"] or
-                    time.time() - event["created"] > 7 * 86400):
-                answer = "该事项已关闭、已变更或校验码过期，请使用最新通知。"
-            elif any(r.get("aid") == aid and r.get("version") == event["version"]
-                     for r in state.get("replies", {}).values()):
-                answer = "该版本已有回复，不会重复应用。后续修改请写入人类 inbox。"
+        # Anything else is kept: a decision when it names an open request (anywhere in the text,
+        # no code needed, later messages correct earlier ones), otherwise a note to the PI; a
+        # question is also answered at once from the project records (read-only, `qa_step`).
+        replies = state.setdefault("replies", {})
+        open_ = actions(cfg)
+        named = [f"A{m}" for m in AID.findall(text)]
+        hit = next((a for a in named if a in open_), None)
+        body = re.sub(r"^\s*(回复|reply|更正|留言|note)[\s:：]*", "", text, flags=re.I)
+        if hit:
+            stripped = re.sub(rf"^\s*[Aa]{hit[1:]}(?!\d)[\s:：,，]*", "", body)
+            body = stripped if stripped != body else re.sub(rf"(?<![A-Za-z0-9])[Aa]{hit[1:]}(?!\d)", "", body, count=1)
+            body = re.sub(r"^[0-9a-f]{8}\s+", "", body).strip()      # an old-style check code is ignored
+            if not body:
+                answer = f"请在 {hit} 后面写上你的决定，例如“{hit} 同意”或“{hit} 选 b，理由……”。"
             else:
-                state.setdefault("replies", {})[key] = {
-                    "aid": aid, "version": event["version"], "body": body,
-                    "sender": msg["from_user_id"], "at": now_iso(), "status": "queued"}
-                answer = f"已收到 {aid} 的决定，等待下一轮接收。预算与实验验收规则仍然有效。"
+                line = open_[hit]
+                notified = [e for e in state.get("events", {}).values() if e.get("aid") == hit and e.get("sent")]
+                seen = max(notified, key=lambda e: e.get("created", 0))["version"] if notified else None
+                replies[key] = {"aid": hit, "version": action_version(cfg, line), "seen_version": seen, "body": body,
+                                "sender": msg["from_user_id"], "at": now_iso(), "status": "queued",
+                                "correction": text.lstrip().startswith("更正") or any(
+                                    r.get("aid") == hit for r in replies.values()),
+                                "unseen_version": bool(notified) and all(
+                                    e.get("version") != action_version(cfg, line) for e in notified)}
+                answer = (f"已收到：{hit} → “{body[:120]}”。下一轮（约 15 分钟内）交给 PI 执行；"
+                          f"理解有误可发“更正 {hit} …”。预算和硬性规定仍然有效。")
+        elif body.strip():
+            replies[key] = {"aid": "NOTE", "version": None, "body": body.strip(),
+                            "sender": msg["from_user_id"], "at": now_iso(), "status": "queued"}
+            closed = [a for a in named if a not in open_]
+            prefix = f"{'、'.join(closed)} 已关闭；" if closed else ""
+            if is_question(text) and qa_settings(cfg)["enabled"]:
+                state.setdefault("questions", {})[key] = {"text": body.strip(), "status": "queued", "at": now_iso()}
+                answer = f"{prefix}收到问题，正在查项目记录，1–2 分钟内回复；同时已转给 PI。"
+            else:
+                answer = f"{prefix}已作为留言转给 PI，下一轮处理。"
+    if answer is None:
+        return
     state["received"][key] = {"text": answer, "sent": False,
                               "progress_query": is_progress_query(text) and text not in ("状态", "status")}
 
@@ -396,6 +514,7 @@ def cycle(cfg, client):
         if batch.get("get_updates_buf"):
             state["cursor"] = batch["get_updates_buf"]
         state["initialized"] = True
+        qa_step(cfg, state)
         # Migrate the former permanent latch. A transient -2 must never require
         # another human message just to resume automatic attempts.
         state.pop("blocked_context", None)
@@ -512,26 +631,40 @@ def apply_replies(cfg):
                 continue
             target = cfg.layout.inbox / f"weixin-{reply['aid']}-{key}.md"
             line = actions(cfg).get(reply["aid"])
+            notes = []
             if target.exists():  # recovery after file written but state not committed
                 reply["status"] = "applied"
-            elif reply["aid"] != "NOTE" and (not line or action_version(cfg, line) != reply["version"]):
-                reply["status"] = "stale"
             else:
+                if reply["aid"] != "NOTE" and not line:
+                    # answered or timed out meanwhile: still deliver it; the PI reconciles
+                    target = cfg.layout.inbox / f"weixin-NOTE-{key}.md"
+                    notes.append(f"This was an answer to {reply['aid']}, which had already been closed "
+                                 "(answered or timed out). If it differs from what the PI did, follow the human.")
+                elif reply["aid"] != "NOTE" and action_version(cfg, line) != reply["version"]:
+                    notes.append("The request text changed after the human answered: check that the answer still fits, "
+                                 "and ask once more if it clearly does not.")
                 claim = verdict_claim(line)
                 grade = re.fullmatch(r"(?:评级|grade) ([ABCD])", reply["body"].strip())
                 if claim and grade:
                     from autolab import gates
                     fp = gates.fingerprint(cfg, claim)["fingerprint"]
-                    write_atomic(cfg.layout.human / "verdicts" / f"{claim}.toml",
-                                 f'grade = "{grade[1]}"\nfingerprint = "{fp}"\n')
+                    # the human must have been shown this exact claim version
+                    if line and action_version(cfg, line) == reply["version"] == reply.get("seen_version", reply["version"]):
+                        write_atomic(cfg.layout.human / "verdicts" / f"{claim}.toml",
+                                     f'grade = "{grade[1]}"\nfingerprint = "{fp}"\n')
+                    else:      # a grade is bound to the exact claim version it was given for
+                        notes.append(f"The grade was NOT recorded: claim {claim} changed after the human graded it.")
+                if reply.get("correction"):
+                    notes.append("This corrects an earlier answer to the same request: the latest answer wins.")
                 write_atomic(target, f"# Human Weixin reply: {reply['aid']}\n\n"
-                             f"Received: {reply['at']}\nRequest version: {reply['version']}\n\n"
-                             f"{reply['body']}\n")
+                             f"Received: {reply['at']}\nRequest version: {reply['version']}\n"
+                             + "".join(f"Note: {n}\n" for n in notes) + f"\n{reply['body']}\n")
                 reply["status"] = "applied"
                 count += 1
             state.setdefault("received", {})["apply-" + key] = {
-                "text": f"{reply['aid']}: " + ("已写入人类 inbox，PI 下一轮读取。" if reply['status'] == 'applied'
-                                             else "方案已变化，旧回复未应用，请重新决定。"), "sent": False}
+                "text": f"{reply['aid'] if reply['aid'] != 'NOTE' else '留言'}: 已交给 PI（写入人类 inbox）"
+                        + ("；评级未记录，因为结论在你评级后改过" if any("NOT recorded" in n for n in notes) else "")
+                        + "。", "sent": False}
         write_json(d / "state.json", state)
     return count
 

@@ -42,6 +42,10 @@ class Weixin(unittest.TestCase):
         p = patch.object(weixin, "render_event", side_effect=lambda cfg, e: e["text"] + " " + e.get("token", ""))
         p.start()
         self.addCleanup(p.stop)
+        p = patch.object(weixin, "qa_settings", return_value={"enabled": False, "model": "sonnet", "usd_per_question": 0.5,
+                                                               "usd_per_day": 5.0, "timeout_s": 30, "command": "claude"})
+        p.start()
+        self.addCleanup(p.stop)
         for name, value in (("SEND_INTERVAL", 0), ("PROGRESS_INTERVAL", 0), ("MESSAGE_LIMIT", 1000)):
             p = patch.object(weixin, name, value)
             p.start()
@@ -89,26 +93,82 @@ class Weixin(unittest.TestCase):
         self.assertFalse(state.get("replies"))
         self.assertEqual(state["context"], "context")
 
-    def test_changed_plan_rejects_old_decision(self):
+    def test_plan_change_does_not_void_a_reply(self):
         aid, event = self.request()
         write(self.cfg.layout.experiments / "E001/plan.md", "new plan")
         self.reply(aid, event)
-        self.assertFalse(read_json(self.d / "state.json").get("replies"))
+        self.assertEqual(len(read_json(self.d / "state.json")["replies"]), 1)
+        write(self.cfg.layout.experiments / "E002/plan.md", "another plan")
+        self.assertEqual(weixin.apply_replies(self.cfg), 1)
 
-    def test_change_after_reply_before_import_is_rejected(self):
-        aid, event = self.request()
-        self.reply(aid, event)
-        write(self.cfg.layout.experiments / "E001/plan.md", "new plan")
-        self.assertEqual(weixin.apply_replies(self.cfg), 0)
-        self.assertEqual(next(iter(read_json(self.d / "state.json")["replies"].values()))["status"], "stale")
+    def test_reply_without_code_anywhere_in_text_and_corrections(self):
+        aid, _ = self.request()
+        self.client.messages = [self.message(f"同意{aid}，先做试跑", "2")]
+        weixin.cycle(self.cfg, self.client)
+        replies = list(read_json(self.d / "state.json")["replies"].values())
+        self.assertEqual((replies[0]["aid"], replies[0]["body"]), (aid, "同意，先做试跑"))
+        self.assertTrue(any(f"已收到：{aid}" in t for t, _, _ in self.client.sent))
+        self.client.messages = [self.message(f"更正 {aid} 不做试跑，直接写报告", "3")]
+        weixin.cycle(self.cfg, self.client)
+        replies = list(read_json(self.d / "state.json")["replies"].values())
+        self.assertTrue(replies[1]["correction"])
+        self.assertEqual(weixin.apply_replies(self.cfg), 2)
+        texts = [p.read_text(encoding="utf-8") for p in self.cfg.layout.inbox.glob("weixin-*.md")]
+        self.assertTrue(any("latest answer wins" in t and "直接写报告" in t for t in texts))
+        self.client.messages = [self.message(aid, "4")]                      # an A-number alone
+        weixin.cycle(self.cfg, self.client)
+        self.assertTrue(any(f"请在 {aid} 后面写上你的决定" in t for t, _, _ in self.client.sent))
 
-    def test_expired_token_rejected(self):
+    def test_free_text_is_a_note_and_closed_request_reply_is_delivered(self):
         aid, event = self.request()
-        state = read_json(self.d / "state.json")
-        next(iter(state["events"].values()))["created"] = 0
-        write_json(self.d / "state.json", state)
-        self.reply(aid, event)
-        self.assertFalse(read_json(self.d / "state.json").get("replies"))
+        self.client.messages = [self.message("这个方向先放一放，优先真实算例", "2")]
+        weixin.cycle(self.cfg, self.client)
+        self.assertTrue(any("已作为留言转给 PI" in t for t, _, _ in self.client.sent))
+        self.assertEqual(weixin.apply_replies(self.cfg), 1)
+        human.resolve_actions(self.cfg, aid, "answered elsewhere")
+        self.client.messages = [self.message(f"{aid} 同意", "3")]
+        weixin.cycle(self.cfg, self.client)
+        self.assertTrue(any(f"{aid} 已关闭" in t for t, _, _ in self.client.sent))
+        self.assertEqual(weixin.apply_replies(self.cfg), 1)
+        self.assertTrue(any(f"{aid} 同意" in p.read_text(encoding="utf-8")
+                            for p in self.cfg.layout.inbox.glob("weixin-NOTE-*.md")))
+
+    def test_question_answered_by_read_only_run(self):
+        import os, stat, time as _t
+        fake = self.root.parent / "fake-claude"
+        fake.write_text("#!/bin/sh\necho '{\"result\": \"E013 已停止：盒子方法比基线慢。\", \"total_cost_usd\": 0.12}'\n",
+                        encoding="utf-8")
+        fake.chmod(fake.stat().st_mode | stat.S_IEXEC)
+        settings = {"enabled": True, "model": "sonnet", "usd_per_question": 0.5, "usd_per_day": 5.0,
+                    "timeout_s": 30, "command": str(fake)}
+        with patch.object(weixin, "qa_settings", return_value=settings):
+            self.client.messages = [self.message("为什么 E013 停了？", "2")]
+            weixin.cycle(self.cfg, self.client)
+            self.assertTrue(any("正在查项目记录" in t for t, _, _ in self.client.sent))
+            for _ in range(50):
+                if list((self.d / "qa").glob("*.json")) and not list((self.d / "qa").glob("*.part")):
+                    break
+                _t.sleep(0.2)
+            weixin.cycle(self.cfg, self.client)
+            weixin.cycle(self.cfg, self.client)
+        self.assertTrue(any("E013 已停止" in t for t, _, _ in self.client.sent))
+        from autolab.util import read_jsonl
+        spent = [r for r in read_jsonl(self.cfg.layout.state / "budget.jsonl") if r["source"] == "weixin_qa"]
+        self.assertEqual(spent[0]["usd"], 0.12)
+        self.assertEqual(weixin.apply_replies(self.cfg), 1)                  # the question also reaches the PI
+        args = (self.d / "qa" / "settings.json").read_text(encoding="utf-8")
+        self.assertIn(".ssh", args)
+
+    def test_question_budget_cap(self):
+        from autolab import budget
+        budget.record_cost(self.cfg, "weixin_qa", 4.8)
+        settings = {"enabled": True, "model": "sonnet", "usd_per_question": 0.5, "usd_per_day": 5.0,
+                    "timeout_s": 30, "command": "sh"}
+        with patch.object(weixin, "qa_settings", return_value=settings):
+            self.client.messages = [self.message("现在最大的风险是什么？", "2")]
+            weixin.cycle(self.cfg, self.client)
+            weixin.cycle(self.cfg, self.client)
+        self.assertTrue(any("额度已用完" in t for t, _, _ in self.client.sent))
 
     def test_failed_send_retries_same_id_without_losing_request(self):
         human.request_action(self.cfg, "approval", "approve", True)
@@ -204,7 +264,7 @@ class Weixin(unittest.TestCase):
         write(claim, '+++\nstatement = "different claim"\n+++\n')
         self.client.messages = [self.message(f"回复 {aid} {event['token']} 评级 A", "2")]
         weixin.cycle(self.cfg, self.client)
-        self.assertEqual(weixin.apply_replies(self.cfg), 0)
+        self.assertEqual(weixin.apply_replies(self.cfg), 1)  # delivered as a note
         self.assertFalse((self.cfg.layout.human / "verdicts/C001.toml").exists())
 
     def test_long_decision_not_silently_truncated(self):
@@ -320,7 +380,8 @@ class Weixin(unittest.TestCase):
             self.assertIn("milestone two", self.client.sent[-1][0])
 
     def test_chinese_copy_bound_to_action_and_preserves_reply(self):
-        aid = human.request_action(self.cfg, "decision", "Approve pilot or stop? Cost 4-11 core-h", True)
+        aid = human.request_action(self.cfg, "decision", "Approve pilot or stop? Cost 4-11 core-h", True,
+                                   rule="pilot", recommend="run the pilot")
         weixin.summarize(self.cfg, aid, "请决定先做试跑还是停止。", "试跑预计需要 4–11 核时，费用尚未实测。")
         with patch.object(weixin, "render_event", REAL_RENDER):
             self.client.messages = [self.message("状态")]
@@ -330,10 +391,11 @@ class Weixin(unittest.TestCase):
         self.assertIn("背景：", text)
         self.assertNotIn("Approve pilot", text)
         event = next(e for e in read_json(self.d / "state.json")["events"].values() if e.get("aid") == aid)
-        self.assertIn(f"回复 {aid} {event['token']}", text)
-        write(self.cfg.layout.experiments / "E001/plan.md", "changed")
+        self.assertIn(f"直接发“{aid} 你的决定”", text)
+        self.assertIn("前不回复，PI 将按推荐方案执行", text)
+        write(self.cfg.layout.experiments / "E001/plan.md", "changed")            # copy stays bound to the request
         current = next(e for e in weixin.events(self.cfg).values() if e.get("aid") == aid)
-        self.assertNotIn("copy", current)
+        self.assertIn("copy", current)
 
     def test_chinese_progress_and_unknown_english_fallback(self):
         human.notify(self.cfg, "进展：完成小规模验证。背景：误差为零，但尚未测试真实数据。")

@@ -34,7 +34,7 @@ def protected(cfg: Config) -> dict[str, str]:
     for name in ("evaluator.json", "outcome.json", "outcomes.jsonl"):   # written by autolab commands only
         files += list(cfg.layout.experiments.glob(f"*/{name}"))
     files += [cfg.layout.experience / "lessons.jsonl", cfg.layout.state / "calls.jsonl",
-              cfg.layout.state / "budget.jsonl"]
+              cfg.layout.state / "budget.jsonl", cfg.layout.state / "requests.json"]
     files += list(cfg.layout.reviews.rglob("*"))
     for pattern in ("*/plan_gate.json", "*/jobs.jsonl", "*/jobs_usage.jsonl", "*/submission_pending.json"):
         files += list(cfg.layout.experiments.glob(pattern))
@@ -141,5 +141,5 @@ def check(cfg: Config, log: Path | None) -> dict:
                        "Integrity guard: " + "; ".join(f"{v['file']}: {v['kind']}" for v in violations[:6])
                        + (". The lab is paused (00_human/STOP); check with `git diff` / `git log`, then delete STOP."
                           if serious else ". Configuration was restored from the pre-turn snapshot."),
-                       blocking=bool(serious))
+                       blocking=bool(serious), rule="integrity")
     return res

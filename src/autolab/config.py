@@ -69,6 +69,14 @@ DEFAULTS: dict[str, Any] = {
         "download_request_tiers": ["A"],      # only these tiers trigger automatic download requests
     },
     # total_usd = hard cap for the whole run (0 = no cap); enforced by scripts/run_pi.sh
+    # how long the lab waits for the human (autonomy.py): blocking requests carry the PI's
+    # recommendation and are carried out after the timeout, except rules listed in always_ask
+    "autonomy": {"decision_timeout_hours": 4,
+                 "always_ask": ["budget_increase", "gpu", "new_data_source", "research_goal"],
+                 "reminder_hours": 4, "blocked_max_idle_min": 180},
+    # Weixin questions answered at once by a read-only model run over the project files
+    "weixin": {"qa": {"enabled": True, "model": "sonnet", "usd_per_question": 0.5, "usd_per_day": 5.0,
+                      "timeout_s": 300, "command": "claude"}},
     "budget": {"total_usd": 0.0, "usd_per_day": 40.0, "usd_per_task": 5.0},
     # extra shell commands the human allows the agents (rendered into .claude/settings.json by
     # `autolab skills mount`), and extra environment variables for their sessions

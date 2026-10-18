@@ -12,6 +12,7 @@
 - 
 
 ## Ask me first
+<!-- Only what must wait for you. Everything else (stopping or redirecting a sub-direction, pilots within the hard limits, drafting reports) is the PI's decision; it tells you. A request you do not answer is carried out after [autonomy] decision_timeout_hours (autolab.toml), except the keys in [autonomy] always_ask. -->
 - Changing the research goal or questions
 - Bringing in a new data source
 - 
