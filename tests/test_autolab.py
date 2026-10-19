@@ -463,6 +463,35 @@ pi_grade = "{grade}"
         self.assertIn("We^0.52", (self.cfg.layout.findings / "INDEX.md").read_text(encoding="utf-8"))
         self.assertEqual(read_json(f / "finding.json")["reviewer_model"], "gpt-6-astra")
 
+    def test_unverified_out_of_scope_items_do_not_block(self):
+        base = {"verdict": "yes", "grade": "B", "issues": []}
+        res = self.claim("C004", "B", {**base, "unverified": [
+            {"item": "speedup inside the real solver", "claimed": False},
+            {"item": "novelty of the seed rule", "claimed": False}]})
+        self.assertEqual(res["decision"], "accepted", res)
+        rec = read_json(self.cfg.layout.findings / res["finding"] / "finding.json")
+        self.assertEqual(rec["not_claimed_unverified"], ["speedup inside the real solver", "novelty of the seed rule"])
+        res = self.claim("C005", "B", {**base, "unverified": [{"item": "the headline slope", "claimed": True}]})
+        self.assertEqual(res["decision"], "needs_work", res)
+        res = self.claim("C006", "B", {**base, "unverified": ["an old-format item"]})          # before 0.6.2
+        self.assertEqual(res["decision"], "needs_work")
+        self.assertIn("run the review again", " ".join(res["reasons"]))
+
+    def test_diagnosis_files_added_after_outcome_do_not_make_it_stale(self):
+        res = self.claim("C007", "B")
+        self.assertEqual(res["decision"], "accepted", res)
+        e = self.cfg.layout.experiments / "E001"
+        write(e / "analysis_diag" / "diagnose.py", "print('why')\n")        # post-outcome diagnosis
+        outcome = read_json(e / "outcome.json")
+        self.assertTrue(research.outcome_current(self.cfg, "E001", outcome))
+        write(e / "plan_check.py", "x = 1\n")
+        self.assertTrue(research.outcome_current(self.cfg, "E001", outcome))
+        code = next(p for p in outcome["code_manifest"] if p.endswith(".py")) if any(
+            p.endswith(".py") for p in outcome["code_manifest"]) else None
+        if code:
+            write(self.root / code, "changed = True\n")
+            self.assertFalse(research.outcome_current(self.cfg, "E001", outcome))
+
     def test_domain_validation_required(self):
         res = self.claim("C002", validation=False)
         self.assertEqual(res["decision"], "blocked")
@@ -1346,6 +1375,41 @@ class ResearchSteering(unittest.TestCase):
 
     def setUp(self):
         self.root, self.cfg = make_project()
+
+    def test_failed_secondary_array_task_can_be_excused(self):
+        from autolab.util import append_jsonl, now_iso
+        passing_plan(self.cfg)
+        exp = self.cfg.layout.experiments / "E001"
+        append_jsonl(exp / "jobs.jsonl", {"job": "900", "eid": "E001", "submitted": now_iso(), "resources": {"total_cpus": 2}})
+        append_jsonl(exp / "jobs_usage.jsonl", {"job": "900", "state": "OUT_OF_MEMORY", "elapsed_h": 1, "core_hours": 2})
+        fake = write(Path(tempfile.mkdtemp()) / "sacct", "#!/bin/bash\nprintf '900_0|COMPLETED\\n900_1|OUT_OF_MEMORY\\n'\n")
+        fake.chmod(fake.stat().st_mode | stat.S_IEXEC)
+        os.environ["AUTOLAB_SACCT"] = str(fake)
+        self.addCleanup(os.environ.pop, "AUTOLAB_SACCT", None)
+        with self.assertRaises(ValueError):                                   # the OOM task is not excused
+            research.record_outcome(self.cfg, "E001", "valid", "supports", "continue", "face task fine")
+        with self.assertRaises(ValueError):                                   # an excuse needs a reason
+            research.record_outcome(self.cfg, "E001", "valid", "supports", "continue", "x", failed_ok={"900_1": ""})
+        rec = research.record_outcome(self.cfg, "E001", "valid", "supports", "continue", "face task fine",
+                                      failed_ok={"900_1": "secondary full-connectivity task, out of memory"})
+        self.assertEqual(rec["excused_failures"], {"900_1": "secondary full-connectivity task, out of memory"})
+        self.assertIn("excused failures: 900_1", (self.cfg.layout.state / "DECISIONS.md").read_text(encoding="utf-8"))
+        with self.assertRaises(ValueError):                                   # nothing completed at all
+            research.record_outcome(self.cfg, "E001", "valid", "supports", "continue", "x",
+                                    failed_ok={"900_0": "a", "900_1": "b"})
+
+    def test_decision_amends_and_standby_hint(self):
+        d1 = tasks.decide(self.cfg, "run E030 on standby", "short job")
+        d2 = tasks.decide(self.cfg, "run E030 on normal QOS", "needs 6 h", amends=d1)
+        self.assertIn(f"[amends {d1}] run E030 on normal QOS", (self.cfg.layout.state / "DECISIONS.md").read_text(encoding="utf-8"))
+        with self.assertRaises(KeyError):
+            tasks.decide(self.cfg, "x", "y", amends="D999")
+        _, cfg = make_project(site="negishi")
+        import datetime as dt
+        later = (dt.datetime.now() + dt.timedelta(days=5)).strftime("%Y-%m-%dT%H:%M:%S")
+        hint = slurm._start_hint(f"sbatch: Job 1 to start at {later} using 4 processors", {"qos": "", "hours": 2}, cfg)
+        self.assertIn('qos = "standby"', hint)
+        self.assertEqual(slurm._start_hint("sbatch: Job 1 to start at 2000-01-01T00:00:00", {"hours": 2}, cfg), "")
 
     def test_plan_needs_candidate_cards_and_discrimination(self):
         res, _ = passing_plan(self.cfg)

@@ -103,10 +103,20 @@ def check_skills_used(cfg: Config, card: Path) -> tuple[list[str], list[str]]:
     return problems, warnings
 
 
-def decide(cfg: Config, text: str, why: str, evidence: str = "", track: str = "", by: str = "PI") -> str:
+def decide(cfg: Config, text: str, why: str, evidence: str = "", track: str = "", by: str = "PI",
+           amends: str = "") -> str:
+    """`amends`: the D-id this record corrects or extends; near-duplicate records used to pile up
+    when a decision was refined (RETRO-133)."""
     from autolab.util import next_id
-    did = next_id(cfg.layout.ids, "decision")
     p = cfg.layout.state / "DECISIONS.md"
+    amends = amends.strip()
+    if amends:
+        if not re.fullmatch(r"D\d+", amends):
+            raise ValueError("--amends takes a decision id such as D172")
+        if not (p.is_file() and re.search(rf"(?m)^## {amends} ", p.read_text(encoding="utf-8"))):
+            raise KeyError(f"no decision {amends} in state/DECISIONS.md")
+        text = f"[amends {amends}] {text}"
+    did = next_id(cfg.layout.ids, "decision")
     head = "" if p.is_file() else ("# Decisions (append-only; written by `autolab decide`)\n\n"
                                    "Newest last. Each entry: what was decided, why, on which evidence.\n\n")
     entry = (f"## {did} — {now_iso()}{f' — track {track}' if track else ''} — {by}\n"

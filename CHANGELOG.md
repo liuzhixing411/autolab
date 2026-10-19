@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.6.2 — 2026-10-19
+
+Framework problems reported by the first-test retrospective RETRO-133 (claims C009/C010 blocked):
+- **Claim gate and out-of-scope items**: reviews now mark each unverified item `claimed: true|false`. Only
+  items the claim asserts block acceptance; items the claim explicitly leaves out of scope are kept on the
+  finding as `not_claimed_unverified`. Reviews in the old format (plain strings) still block and ask for a
+  new review.
+- **Failed secondary tasks**: `autolab outcome ... --failed-ok <job>_<task>=<reason>` closes a run as valid
+  when only an excused array task or secondary job failed (one OOM task used to void the primary result);
+  at least one non-excused task must have completed. Runs without jobs (offline analyses) are unaffected.
+- **Post-outcome diagnosis**: an outcome records the code files the run used; files added later inside the
+  experiment folder no longer make it stale. Changed or removed recorded files, and any change to shared
+  code outside the folder, still do. Outcomes recorded before 0.6.2 keep the old check.
+- `autolab decide ... --amends D<n>` for corrections instead of near-duplicate records.
+- `autolab slurm validate` adds a `start_hint` when the account queue estimate is long and the job fits
+  standby.
+- Claim fingerprints skip optional shared paths that do not exist (no more `dependency:src: missing`).
+- Timeout notices and reminders state the PI's recommendation and Chinese summary; the Weixin listener
+  releases its lock on SIGHUP/SIGTERM (0.6.1 fixes, see git log).
+
 ## 0.6.0 — 2026-10-18
 
 More autonomy for the PI. In the first test run three tracks sat idle for 37 hours behind

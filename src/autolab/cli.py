@@ -233,7 +233,7 @@ def cmd_task(a):
 
 def cmd_decide(a):
     from autolab import tasks
-    print(tasks.decide(_cfg(a), a.text, a.why, a.evidence, a.track, a.by))
+    print(tasks.decide(_cfg(a), a.text, a.why, a.evidence, a.track, a.by, a.amends))
 
 
 def cmd_lesson(a):
@@ -278,7 +278,8 @@ def cmd_candidate(a):
 def cmd_outcome(a):
     from autolab import research
     rec = research.record_outcome(_cfg(a), a.eid, a.engineering, a.hypothesis, a.value, a.why,
-                                  [e for e in (a.evidence or "").split(",") if e.strip()], a.usd, a.changes_goal)
+                                  [e for e in (a.evidence or "").split(",") if e.strip()], a.usd, a.changes_goal,
+                                  dict(x.split("=", 1) if "=" in x else (x, "") for x in (a.failed_ok or [])))
     _out(rec)
 
 
@@ -465,6 +466,7 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--evidence", default="")
     s.add_argument("--track", default="")
     s.add_argument("--by", default="PI")
+    s.add_argument("--amends", default="", help="D-id this decision corrects or extends (instead of a near-duplicate record)")
     s.set_defaults(fn=cmd_decide)
 
     s = sub.add_parser("lesson", help="scoped lessons: add | list | support/counter/retire <LS-id> (surface in context packs)")
@@ -500,6 +502,8 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--why", required=True)
     s.add_argument("--evidence", help="comma-separated files")
     s.add_argument("--usd", type=float, help="API cost attributable to this experiment, if known")
+    s.add_argument("--failed-ok", action="append", help="valid run with a failed secondary task or job: <job>_<task>=<reason> "
+                   "(repeat for several); recorded with the outcome")
     s.add_argument("--changes-goal", action="store_true", help="pivot/stop that changes the research goal or question "
                    "(waits for the human); stopping or redirecting a sub-direction is the PI's call")
     s.set_defaults(fn=cmd_outcome)

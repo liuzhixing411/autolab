@@ -191,8 +191,52 @@ HYPOTHESIS = ("supports", "refutes", "inconclusive", "n/a")
 VALUE = ("continue", "refine", "pivot", "stop")
 
 
-def experiment_version(cfg: Config, eid: str) -> str:
-    """Bind an outcome to the run ledger, code (including shared sources), and results."""
+def code_manifest(cfg: Config, eid: str) -> dict[str, str]:
+    """Code and config files the run depends on (clean paths, outputs excluded): path -> sha256."""
+    from autolab.slurm import _CODE_EXT, _OUTPUT_DIRS, clean_paths
+    root = cfg.layout.root
+    files = {}
+    for rel in clean_paths(cfg, eid):
+        p = root / rel
+        if p.is_file():
+            files[rel] = sha256_file(p)
+        elif p.is_dir():
+            for f in sorted(x for x in p.rglob("*") if x.is_file()):
+                r = f.relative_to(p)
+                if set(r.parts) & _OUTPUT_DIRS:
+                    continue
+                if f.suffix.lower() in _CODE_EXT or f.name.lower() in ("makefile", "plan.md"):
+                    files[f.relative_to(root).as_posix()] = sha256_file(f)
+    return files
+
+
+def experiment_version(cfg: Config, eid: str, manifest: list[str] | None = None) -> str:
+    """Bind an outcome to the run ledger, the code it ran, and the results. With `manifest` (the
+    code files recorded with the outcome) only those files are hashed: a diagnosis script added to
+    the experiment folder afterwards no longer makes the outcome stale (first-test RETRO-133);
+    changing or removing a recorded file still does."""
+    import hashlib
+    import json
+    from autolab.util import sha256_tree
+    exp = cfg.layout.experiments / eid
+    root = cfg.layout.root
+    code = code_manifest(cfg, eid)
+    if manifest is not None:
+        # inside the experiment folder only the recorded files count (later diagnosis files do not);
+        # shared code elsewhere (src/ ...) counts in full: a new shared file may change the run
+        prefix = exp.relative_to(root).as_posix() + "/"
+        code = {r: h for r, h in code.items() if not r.startswith(prefix)}
+        code.update({r: sha256_file(root / r) if (root / r).is_file() else "missing"
+                     for r in manifest if r.startswith(prefix)})
+    parts = {"code": code}
+    for name in ("plan.md", "jobs.jsonl", "results"):
+        p = exp / name
+        parts[name] = sha256_tree(p) if p.exists() else "missing"
+    return hashlib.sha256(json.dumps(parts, sort_keys=True).encode()).hexdigest()
+
+
+def _legacy_version(cfg: Config, eid: str) -> str:
+    """Version as computed before 0.6.2 (whole clean paths), for outcomes recorded then."""
     import hashlib
     import json
     from autolab.gates import _code_hash
@@ -209,8 +253,45 @@ def experiment_version(cfg: Config, eid: str) -> str:
     return hashlib.sha256(json.dumps(parts, sort_keys=True).encode()).hexdigest()
 
 
+def outcome_current(cfg: Config, eid: str, outcome: dict) -> bool:
+    if "code_manifest" in outcome:
+        return outcome.get("version") == experiment_version(cfg, eid, list(outcome["code_manifest"]))
+    return outcome.get("version") == _legacy_version(cfg, eid)
+
+
+def _check_completed(cfg: Config, exp: Path, latest: dict, failed_ok: dict[str, str]) -> list[str]:
+    """Problems that stop a valid outcome. A failed array task (or a whole secondary job) may be
+    excused with a reason; at least one task of the run must have completed. One OOM task of an
+    array used to void the whole experiment (first-test E020: full-connectivity task killed, the
+    primary face task complete)."""
+    from autolab import slurm
+    finished = {r["job"]: r.get("state") for r in read_jsonl(exp / "jobs_usage.jsonl")}
+    probs, completed = [], 0
+    for j in latest.values():
+        job = j["job"]
+        st = finished.get(job)
+        if st is None:
+            probs.append(f"job {job} has no recorded usage yet (run `autolab tick`)")
+            continue
+        if st == "COMPLETED":
+            completed += 1
+            continue
+        if job in failed_ok:
+            continue
+        tasks = slurm.task_states(job)
+        bad = [t for t, s in tasks.items() if s != "COMPLETED" and t not in failed_ok]
+        completed += sum(1 for t, s in tasks.items() if s == "COMPLETED" and t not in failed_ok)
+        if bad or not tasks:
+            probs.append(f"job {job} ended {st}" + (f" (tasks {', '.join(bad)})" if bad else "")
+                         + "; excuse a secondary task with --failed-ok <job>_<task>=<reason>, or record invalid")
+    if latest and not probs and not completed:
+        probs.append("no task of this run completed")
+    return probs
+
+
 def record_outcome(cfg: Config, eid: str, engineering: str, hypothesis: str, value: str, reason: str,
-                   evidence: list[str] | None = None, usd: float | None = None, changes_goal: bool = False) -> dict:
+                   evidence: list[str] | None = None, usd: float | None = None, changes_goal: bool = False,
+                   failed_ok: dict[str, str] | None = None) -> dict:
     exp = cfg.layout.experiments / eid
     if not (exp / "plan.md").is_file():
         raise FileNotFoundError(f"{eid}: no plan.md")
@@ -224,10 +305,13 @@ def record_outcome(cfg: Config, eid: str, engineering: str, hypothesis: str, val
         raise ValueError("give the reason")
     jobs = [r for r in read_jsonl(exp / "jobs.jsonl") if "submitted" in r]
     latest = {j.get("part"): j for j in jobs}
+    failed_ok = {k.strip(): v.strip() for k, v in (failed_ok or {}).items()}
+    if any(not v for v in failed_ok.values()):
+        raise ValueError("every excused failure needs a reason (--failed-ok <job>_<task>=<reason>)")
     if engineering == "valid":
-        finished = {r["job"]: r.get("state") for r in read_jsonl(exp / "jobs_usage.jsonl")}
-        if any(finished.get(j["job"]) != "COMPLETED" for j in latest.values()):
-            raise ValueError("valid outcome requires completed successful jobs; run tick to collect usage first")
+        probs = _check_completed(cfg, exp, latest, failed_ok)
+        if probs:
+            raise ValueError("valid outcome requires completed jobs: " + "; ".join(probs))
     from autolab.util import sha256_tree
     evidence_hashes = {}
     for e in evidence or []:
@@ -248,14 +332,19 @@ def record_outcome(cfg: Config, eid: str, engineering: str, hypothesis: str, val
     if any(w.startswith("legacy:") for w in warns):
         rec["legacy"] = True
         rec["evaluator"] = "legacy-unfrozen"
-    rec["version"] = experiment_version(cfg, eid)
+    manifest = code_manifest(cfg, eid)
+    rec["code_manifest"] = manifest
+    rec["version"] = experiment_version(cfg, eid, list(manifest))
+    if failed_ok:
+        rec["excused_failures"] = failed_ok
     rec["evidence_hashes"] = evidence_hashes
     rec["run_jobs"] = [j["job"] for j in latest.values()]
     with FileLock(exp / "outcome"):
         append_jsonl(exp / "outcomes.jsonl", rec)
         write_json(exp / "outcome.json", rec)
     from autolab.tasks import decide
-    did = decide(cfg, f"{eid} outcome: engineering {engineering}, hypothesis {hypothesis}, value {value}",
+    did = decide(cfg, f"{eid} outcome: engineering {engineering}, hypothesis {hypothesis}, value {value}"
+                 + (f" (excused failures: " + "; ".join(f"{k}: {v}" for k, v in failed_ok.items()) + ")" if failed_ok else ""),
                  reason, ", ".join(evidence or []))
     rec["decision"] = did
     if value in ("pivot", "stop"):

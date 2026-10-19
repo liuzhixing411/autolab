@@ -230,7 +230,31 @@ def validate(cfg: Config, eid: str, part: str | None = None) -> dict:
     for k in ("warning", "warning_cpus", "override"):
         if r.get(k):
             out[k] = r[k]
+    hint = _start_hint(out["output"], r, cfg)
+    if hint:
+        out["start_hint"] = hint
     return out
+
+
+def _start_hint(test_only: str, r: dict, cfg: Config) -> str:
+    """sbatch --test-only's start estimate for the account queue can be days away while standby
+    starts in seconds (RETRO-53/133): say so when the job would fit standby."""
+    import datetime as dt
+    m = re.search(r"to start at (\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d)", test_only)
+    if not m:
+        return ""
+    try:
+        wait_h = (dt.datetime.fromisoformat(m.group(1)) - dt.datetime.now()).total_seconds() / 3600
+    except ValueError:
+        return ""
+    sq = (cfg.site.get("qos", {}) or {}).get("standby")
+    if wait_h < 6 or r.get("qos") == "standby" or not sq:
+        return f"estimated start in {wait_h:.1f} h" if wait_h >= 1 else ""
+    limit = float(sq.get("max_hours", 4) or 4)
+    if float(r.get("hours", 0)) <= limit:
+        return (f"estimated start in {wait_h:.0f} h on the account queue; this job fits standby (<= {limit:g} h, idle "
+                "nodes, usually starts within minutes): set qos = \"standby\" in [resources]")
+    return f"estimated start in {wait_h:.0f} h on the account queue (too long for standby's {limit:g} h limit)"
 
 
 
@@ -401,6 +425,19 @@ def cancel(cfg: Config, eid: str, job: str | None = None) -> list[str]:
         append_jsonl(cfg.layout.experiments / eid / "jobs.jsonl",
                       {"job": j, "eid": eid, "cancelled": now_iso()})
     return targets
+
+
+def task_states(job: str) -> dict[str, str]:
+    """State of every task of a job: {'123_0': 'COMPLETED', '123_1': 'OUT_OF_MEMORY'} for an
+    array, {'123': state} otherwise."""
+    proc = subprocess.run([_exe("sacct"), "-j", job, "-n", "-P", "-X", "-o", "JobID,State"],
+                          capture_output=True, text=True, timeout=60)
+    out = {}
+    for ln in proc.stdout.splitlines():
+        f = ln.strip().split("|")
+        if len(f) >= 2 and f[0]:
+            out[f[0]] = f[1].split()[0] if f[1] else "UNKNOWN"
+    return out
 
 
 def job_state(job: str) -> str:

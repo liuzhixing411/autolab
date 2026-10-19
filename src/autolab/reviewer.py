@@ -90,6 +90,10 @@ def review_pack(cfg, task: str) -> str:
         "Prior work: name the closest prior work (from literature/REVIEW.md, literature/notes/ or your own "
         "knowledge; say which), the mechanism difference, and where the evidence shows that difference. A novelty "
         "statement you cannot verify goes under `unverified`; do not accept it.",
+        "Unverified items: for each, set `claimed` to true if the text under review asserts it or its "
+        "conclusion depends on it, and false if the text explicitly leaves it out of scope (for example in "
+        "'Scope tested vs scope claimed'). Only claimed items count against acceptance; out-of-scope items "
+        "are recorded as disclosed limits. When unsure, use true.",
         "Uncertainty: when the evidence is insufficient, say so and lower `confidence`; do not fill gaps with "
         "assumptions."]
     return "\n".join(lines)
@@ -119,7 +123,7 @@ def build_prompt(task: str, files: list[Path], instructions: str, root: Path,
         "End your answer with one JSON object in a ```json fence with keys:\n" + schema +
         '  "issues": [{"id": str, "severity": "critical"|"major"|"minor", "text": str}],\n'
         '  "closest_work": [{"ref": str, "difference": str, "evidence": str}],\n'
-        '  "unverified": [str],\n'
+        '  "unverified": [{"item": str, "claimed": true | false}],\n'
         '  "confidence": "low" | "medium" | "high"\n')
 
 

@@ -64,8 +64,9 @@ def fingerprint(cfg: Config, cid: str) -> dict:
         from autolab.slurm import clean_paths
         for rel in clean_paths(cfg, eid):
             path = cfg.layout.root / rel
-            parts[f"dependency:{rel}"] = (_code_hash(path) if path.is_dir() else
-                                           sha256_file(path) if path.is_file() else "missing")
+            if not path.exists():           # optional shared path absent in this project (e.g. no src/)
+                continue
+            parts[f"dependency:{rel}"] = _code_hash(path) if path.is_dir() else sha256_file(path)
         outcome = exp / "outcome.json"
         parts[f"outcome:{eid}"] = sha256_file(outcome) if outcome.is_file() else "missing"
     fp = hashlib.sha256(json.dumps(parts, sort_keys=True).encode()).hexdigest()
@@ -139,7 +140,7 @@ def precheck(cfg: Config, cid: str) -> dict:
         outcome = read_json(exp / "outcome.json", {}) or {}
         if outcome.get("engineering") != "valid":
             problems.append(f"experiment {eid} needs a valid engineering outcome")
-        elif outcome.get("version") != research.experiment_version(cfg, eid):
+        elif not research.outcome_current(cfg, eid, outcome):
             problems.append(f"experiment {eid} outcome is stale: record an outcome for the current code, run and evidence")
         for rel, digest in outcome.get("evidence_hashes", {}).items():
             path = cfg.layout.root / rel
@@ -156,6 +157,20 @@ def precheck(cfg: Config, cid: str) -> dict:
         elif not (cfg.layout.root / path).exists():
             problems.append(f"validation evidence '{name}' path missing: {path}")
     return {"ok": not problems, "problems": problems, "meta": meta}
+
+
+def blocking_unverified(review: dict) -> list:
+    """Unverified items that count against acceptance: those the claim asserts (`claimed` true,
+    or not stated). Items the claim explicitly leaves out of scope are disclosed limits, not
+    blockers: before 0.6.2 every unverified item blocked, and the reviewer kept listing what the
+    claims disclaimed (first-test C009, C010 stuck at verdict yes / grade B)."""
+    return [u for u in review.get("unverified") or []
+            if not (isinstance(u, dict) and u.get("claimed") is False)]
+
+
+def disclosed_unverified(review: dict) -> list[str]:
+    return [str(u.get("item", "")) for u in review.get("unverified") or []
+            if isinstance(u, dict) and u.get("claimed") is False]
 
 
 def claim_gate(cfg: Config, cid: str) -> dict:
@@ -202,10 +217,13 @@ def _claim_gate(cfg: Config, cid: str) -> dict:
     elif last.get("verdict") != "yes" or last.get("grade") not in GRADES:
         decision = "needs_review"
         reasons.append(f"unusable review verdict={last.get('verdict')} grade={last.get('grade')}")
-    elif last.get("unverified") or any(i.get("severity") in ("critical", "major")
-                                      for i in last.get("issues", []) if isinstance(i, dict)):
+    elif blocking_unverified(last) or any(i.get("severity") in ("critical", "major")
+                                          for i in last.get("issues", []) if isinstance(i, dict)):
         decision = "needs_work"
-        reasons.append("review has unverified claims or unresolved critical/major issues")
+        legacy = [u for u in last.get("unverified") or [] if not isinstance(u, dict)]
+        reasons.append("review has unverified items that the claim asserts, or unresolved critical/major issues"
+                       + ("; this review lists unverified items without saying whether the claim asserts them "
+                          "(review format before 0.6.2): run the review again" if legacy else ""))
     else:
         combined = worse(meta["pi_grade"], last["grade"])
         split = abs(GRADES.index(meta["pi_grade"]) - GRADES.index(last["grade"]))
@@ -272,7 +290,8 @@ def _accept(cfg: Config, cid: str, meta: dict, grade: str, review: dict, fp: dic
               "pi_grade": meta["pi_grade"], "review": review["id"],
               "reviewer_model": review["route"]["model"], "accepted": now_iso(),
               "experiments": meta.get("experiments", []), "evidence": evidence,
-              "fingerprint": fp["fingerprint"], "fingerprint_parts": fp["parts"]}
+              "fingerprint": fp["fingerprint"], "fingerprint_parts": fp["parts"],
+              "not_claimed_unverified": disclosed_unverified(review)}   # disclosed limits, kept with the finding
     if supersedes:
         record["supersedes"] = supersedes["id"]
         write_json(cfg.layout.findings / supersedes["id"] / "finding.json", {**supersedes, "superseded_by": fid})
