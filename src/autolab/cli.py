@@ -85,6 +85,19 @@ def cmd_human(a):
         print(human.request_action(cfg, a.kind, text, blocking, dedupe=a.dedupe, rule=a.rule,
                                    recommend=a.recommend, deadline_hours=a.deadline_hours,
                                    enforce=blocking) or "")
+    elif a.action == "add":
+        # the human's upload path into 00_human/: as an autolab command it leaves a guard receipt, so a
+        # note added while a PI turn runs is not mistaken for tampering (agents may not call it: hook)
+        import shutil
+        src = Path(a.text).expanduser()
+        if not src.is_file():
+            raise FileNotFoundError(f"no such file: {src}")
+        dest = (cfg.layout.human / (a.dest or f"inbox/{src.name}")).resolve()
+        if not dest.is_relative_to(cfg.layout.human.resolve()) or dest.name == "STOP":
+            raise ValueError("--dest must stay inside 00_human/ (and is not STOP)")
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(src, dest)
+        print(dest.relative_to(cfg.layout.root.resolve()))
     elif a.action == "uploads":
         _out(human.scan_uploads(cfg))
     elif a.action == "notify":
@@ -308,6 +321,9 @@ def cmd_guard(a):
         print("guard: no valid snapshot; refusing to continue", file=sys.stderr)
         return 5
     if res.get("violations"):
+        if not res.get("serious"):           # human edits accepted, config restored: keep the lab running
+            print(f"{now_iso()} guard: " + "; ".join(f"{v['file']}: {v['kind']}" for v in res["violations"]))
+            return 0
         print(f"{now_iso()} guard: {len(res['violations'])} violation(s): "
               + "; ".join(f"{v['file']}: {v['kind']}" for v in res["violations"]))
         return 5
@@ -370,7 +386,8 @@ def build_parser() -> argparse.ArgumentParser:
     s.set_defaults(fn=cmd_skills)
 
     s = sub.add_parser("human")
-    s.add_argument("action", choices=["check", "ack", "request", "uploads", "notify", "summaries", "summarize"])
+    s.add_argument("action", choices=["check", "ack", "request", "uploads", "notify", "summaries", "summarize", "add"])
+    s.add_argument("--dest", help="add: target inside 00_human/ (default inbox/<file name>)")
     s.add_argument("--summary", default="", help="one Chinese sentence, at most 100 characters")
     s.add_argument("--background", default="", help="Chinese context and qualifications, at most 360 characters")
     s.add_argument("text", nargs="?", default="")

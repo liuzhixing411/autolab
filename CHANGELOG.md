@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.6.3 — 2026-10-19
+
+- **Human edits no longer stop the lab.** The integrity guard treated any unreceipted change in
+  `00_human/` during a PI turn as tampering: an inbox note uploaded mid-turn created STOP and the
+  runner exited (first-test, 2026-10-19). A human-zone change is now accepted (and reported, non-blocking)
+  when the turn log shows no agent write into `00_human/`; a write tool, shell redirection or interpreter
+  write aimed there is still serious (STOP). `autolab guard check` exits non-zero only for serious
+  violations, so a restored configuration file no longer ends the runner either.
+- `autolab human add <file> [--dest ...]`: the human's upload path into `00_human/`, leaving an
+  integrity receipt; agents may not call it (hook).
+
 ## 0.6.2 — 2026-10-19
 
 Framework problems reported by the first-test retrospective RETRO-133 (claims C009/C010 blocked):

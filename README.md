@@ -144,6 +144,7 @@ Stop the loop with `tmux kill-session -t autolab-loop` (on the same login node),
 | See what it needs from you | `00_human/ACTION_NEEDED.md`: downloads, decisions, data. Mark done with `[x]`; answer decisions in `00_human/inbox/` |
 | Check that it understood your changes | `00_human/ACK.md` |
 | Give an instruction | A new `.md` file in `00_human/inbox/` (one note per file), or edit GOAL / RULES / TASTE. A change counts once the file has been still for 5 minutes |
+| Add a file while a PI turn runs | `autolab human add <file> [--dest inbox/<name>]` copies it into `00_human/` with an integrity receipt. A file written there by hand during a turn is also accepted when the turn shows no agent write into `00_human/`; it is reported for your information and does not pause the lab |
 | Supply a paper it cannot download | Save it as `00_human/pdf_drop/L00xx.pdf` (the ID from the request) |
 | Pause everything | `touch 00_human/STOP` (delete to resume) |
 | Let the PI decide while you are away | Nothing to do: a blocking request you do not answer is carried out after `[autonomy] decision_timeout_hours` (default 4) with the PI's recommendation, except the keys in `[autonomy] always_ask`. For a longer hand-over create `00_human/DELEGATED` (TOML): `until = "2026-10-17T08:00:00-04:00"` and `to = "pi"` |

@@ -102,6 +102,49 @@ def require_trusted_records(cfg: Config, paths: list[Path] | None = None) -> Non
         raise RuntimeError("untrusted control records changed: " + ", ".join(sorted(bad)))
 
 
+HUMAN_EDIT = "human-zone file changed without a receipt; no agent write in the turn log, accepted as a human edit"
+_WRITE_TOOLS = ("Write", "Edit", "MultiEdit", "NotebookEdit")
+
+
+def _tool_calls(log: Path | None) -> list[tuple[str, dict]]:
+    """(tool name, input) of every tool call in a stream-json turn log, subagents included."""
+    import json
+    out = []
+    if not log or not Path(log).is_file():
+        return out
+    for line in Path(log).read_text(encoding="utf-8", errors="ignore").splitlines():
+        try:
+            ev = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        msg = ev.get("message") if isinstance(ev, dict) else None
+        for c in (msg or {}).get("content", []) if isinstance(msg, dict) else []:
+            if isinstance(c, dict) and c.get("type") == "tool_use":
+                out.append((str(c.get("name", "")), c.get("input") or {}))
+    return out
+
+
+def _agent_wrote_human_zone(calls: list[tuple[str, dict]]) -> bool:
+    """Any sign that a tool call wrote into 00_human/ outside ACTION_NEEDED/ACK: a write tool aimed
+    there, a shell command writing there, or an interpreter command with a write op naming it."""
+    from autolab import hooks
+    ok = tuple(HUMAN_WRITABLE)
+    for name, inp in calls:
+        if name in _WRITE_TOOLS:
+            target = str(inp.get("file_path") or inp.get("notebook_path") or "")
+            if "00_human/" in target and not target.endswith(ok):
+                return True
+        elif name == "Bash":
+            cmd = str(inp.get("command", ""))
+            if hooks._AUTOLAB_CMD.match(cmd):
+                continue                       # autolab commands leave receipts of their own
+            if hooks._writes_into(cmd, "00_human/", ok):
+                return True
+            if "00_human" in cmd and hooks._INTERP.search(cmd) and hooks._WRITE_OPS.search(cmd):
+                return True
+    return False
+
+
 def check(cfg: Config, log: Path | None) -> dict:
     d = _dir(cfg)
     snap = read_json(d / "snapshot.json")
@@ -111,6 +154,8 @@ def check(cfg: Config, log: Path | None) -> dict:
     before, after = snap["hashes"], protected(cfg)
     changed = sorted(k for k in set(before) | set(after) if before.get(k) != after.get(k))
     violations, restored = [], []
+    calls = _tool_calls(log)
+    agent_in_human_zone = _agent_wrote_human_zone(calls)
     for rel in changed:
         if rel in approved and approved[rel] == after.get(rel):
             continue
@@ -128,18 +173,28 @@ def check(cfg: Config, log: Path | None) -> dict:
                 shutil.copy2(src, cfg.layout.root / rel)
                 restored.append(rel)
             violations.append({"file": rel, "kind": "configuration changed by a tool call (restored)"})
+        elif rel.startswith("00_human/") and rel not in HUMAN_WRITABLE and not agent_in_human_zone:
+            # The human's own zone: agents cannot write there (hook, sandbox) and the log shows no
+            # attempt, so this is the human editing during a turn. Recorded, but it no longer stops
+            # the lab (first-test, 2026-10-19: an inbox note uploaded mid-turn killed the runner).
+            violations.append({"file": rel, "kind": HUMAN_EDIT})
         else:
             violations.append({"file": rel, "kind": "protected file changed without a trusted mutation receipt"})
-    res = {"checked": True, "changed": changed, "violations": violations, "restored": restored}
+    serious = [v for v in violations if "restored" not in v["kind"] and v["kind"] != HUMAN_EDIT]
+    res = {"checked": True, "changed": changed, "violations": violations, "restored": restored,
+           "serious": bool(serious)}
     if violations:
         from autolab.human import request_action
         append_jsonl(cfg.layout.state / "guard_violations.jsonl", {"at": now_iso(), "log": str(log), **res})
-        serious = [v for v in violations if "restored" not in v["kind"]]
         if serious:
             (cfg.layout.human / "STOP").touch()
-        request_action(cfg, "approval",
+        only_human = all(v["kind"] == HUMAN_EDIT for v in violations)
+        request_action(cfg, "approval" if not only_human else "other",
                        "Integrity guard: " + "; ".join(f"{v['file']}: {v['kind']}" for v in violations[:6])
                        + (". The lab is paused (00_human/STOP); check with `git diff` / `git log`, then delete STOP."
-                          if serious else ". Configuration was restored from the pre-turn snapshot."),
+                          if serious else
+                          (". FYI: if you did not make these edits, check them; uploads through `autolab human add` "
+                           "carry a receipt and are not reported." if only_human
+                           else ". Configuration was restored from the pre-turn snapshot.")),
                        blocking=bool(serious), rule="integrity")
     return res

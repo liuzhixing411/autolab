@@ -194,6 +194,8 @@ def decide(event: dict, root: Path) -> tuple[bool, str]:
                 return False, "Project initialization, project switching and integrity controls belong to the operator."
             if command[:2] == ["budget", "record"]:
                 return False, "Only the runner records API costs."
+            if command[:2] == ["human", "add"]:
+                return False, "`autolab human add` is the human's upload path into 00_human/; agents use `autolab human request`."
             return True, ""
         # blank out quoted text first: a `;` or "sbatch" inside a commit message is not a command
         unquoted = re.sub(r"'[^']*'|\"(?:[^\"\\]|\\.)*\"", " _Q_ ", cmd)

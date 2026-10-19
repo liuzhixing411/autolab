@@ -1087,6 +1087,43 @@ class TickAndCli(unittest.TestCase):
         write(self.cfg.layout.human / "GOAL.md", "# changed by the human\n")      # not in the log: no violation
         self.assertTrue(guard.check(self.cfg, log)["violations"])  # ambiguous edits require operator review
 
+    def test_guard_human_edits_mid_turn_do_not_stop_the_lab(self):
+        from autolab import guard
+        def turn(*calls):
+            return write(self.root / "state" / "pi_logs" / "h.jsonl", "\n".join(json.dumps(
+                {"type": "assistant", "message": {"content": [{"type": "tool_use", "id": str(i), "name": n, "input": inp}]}})
+                for i, (n, inp) in enumerate(calls)) + "\n")
+        guard.snapshot(self.cfg)
+        write(self.cfg.layout.inbox / "note.md", "# from the human\n")                 # uploaded during the turn
+        log = turn(("Bash", {"command": "cat 00_human/inbox/note.md"}), ("Read", {"file_path": "00_human/RULES.md"}))
+        res = guard.check(self.cfg, log)
+        self.assertFalse(res["serious"])
+        self.assertEqual([v["kind"] for v in res["violations"]], [guard.HUMAN_EDIT])
+        self.assertFalse((self.cfg.layout.human / "STOP").exists())
+        self.assertFalse(any("BLOCKING" in a for a in human.open_actions(self.cfg)))
+        rc, _ = run_cli("--project", str(self.root), "guard", "check", str(log))
+        guard.snapshot(self.cfg)
+        write(self.cfg.layout.human / "RULES.md", "# rewritten\n")
+        res = guard.check(self.cfg, turn(("Write", {"file_path": str(self.cfg.layout.human / "RULES.md")})))
+        self.assertTrue(res["serious"])                                                  # an agent wrote there
+        self.assertTrue((self.cfg.layout.human / "STOP").exists())
+        (self.cfg.layout.human / "STOP").unlink()
+        guard.snapshot(self.cfg)
+        write(self.cfg.layout.human / "GOAL.md", "# again\n")
+        self.assertTrue(guard.check(self.cfg, turn(("Bash", {"command": "echo x > 00_human/GOAL.md"})))["serious"])
+        (self.cfg.layout.human / "STOP").unlink()
+        guard.snapshot(self.cfg)                                                         # the receipted upload path
+        src = write(self.root.parent / "outside" / "plan-note.md", "# note\n")
+        rc, out = run_cli("--project", str(self.root), "human", "add", str(src))
+        self.assertEqual((rc, out.strip()), (0, "00_human/inbox/plan-note.md"))
+        self.assertEqual(guard.check(self.cfg, turn())["violations"], [])
+        with self.assertRaises(ValueError):
+            human_add = run_cli("--project", str(self.root), "human", "add", str(src), "--dest", "../autolab.toml")
+            if human_add[0] == 1:
+                raise ValueError
+        d = lambda cmd: hooks.decide({"tool_name": "Bash", "tool_input": {"command": cmd}}, self.root)[0]
+        self.assertFalse(d("autolab human add notes.md"))                              # agents may not use it
+
     def test_numerics_domain_requires_reference_and_timing(self):
         cfgf = self.root / "autolab.toml"
         cfgf.write_text(cfgf.read_text(encoding="utf-8").replace('domain = "cfd"', 'domain = "numerics"'), encoding="utf-8")
