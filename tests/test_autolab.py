@@ -1584,6 +1584,29 @@ class Autonomy(unittest.TestCase):
         self.assertIsNone(reg["A102"]["deadline"])
         self.assertEqual(self.autonomy.adopt_legacy(self.cfg), [])
 
+    def test_legacy_recommendation_extracted_and_notice_in_chinese(self):
+        ex = self.autonomy.extract_recommendation
+        self.assertEqual(ex("- [ ] **A027** [BLOCKING] [decision] Options (a) (b) (c). My recommendation: (a) now, "
+                            "(b) later only if the report says continue. Track C waits.  _(added 2026-10-17)_"),
+                         "(a) now, (b) later only if the report says continue")
+        self.assertEqual(ex("Proposed verdict: MODIFY. Options: (a) draft; (b) L8. Recommendation: (a) plus (b) in parallel."),
+                         "(a) plus (b) in parallel")
+        self.assertEqual(ex("E011: the PI proposes to STOP this line (hypothesis supports). Reason: x."),
+                         "STOP this line (hypothesis supports)")
+        self.assertEqual(ex("Approve the writing stage?"), "")
+        with open(self.cfg.layout.action_needed, "a", encoding="utf-8") as f:
+            f.write("- [ ] **A101** [BLOCKING] [decision] Report now or after L8? Recommendation: draft now, L8 in parallel.\n")
+        write_json(self.cfg.layout.state / "notification_copy.json", {
+            "action:A101:abc": {"summary": "请决定现在写报告还是先跑 L8。", "background": "L8 试跑约 4–11 核时。"}})
+        self.autonomy.adopt_legacy(self.cfg)
+        self.assertEqual(self.autonomy.read_registry(self.cfg)["A101"]["recommend"], "draft now, L8 in parallel")
+        self._expire("A101")
+        self.autonomy.process(self.cfg)
+        text = read_jsonl(self.cfg.layout.state / "human_notifications.jsonl")[-1]["text"]
+        self.assertIn("A101（请决定现在写报告还是先跑 L8。）超时未回复", text)
+        self.assertIn("推荐方案：draft now, L8 in parallel", text)
+        self.assertIn("L8 试跑约 4–11 核时", text)
+
     def test_wake_on_deadline_and_longer_idle_when_blocked(self):
         from autolab import wake
         human.check_changes(self.cfg, now=time.time() + 3600)                 # settle and acknowledge the setup

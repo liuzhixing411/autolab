@@ -113,6 +113,29 @@ def overdue(cfg: Config) -> list[str]:
             if (d := _parse(reg.get(a, {}).get("deadline"))) is not None and d <= now]
 
 
+_RECOMMEND = (re.compile(r"(?i)\b(?:my |pi )?recommend(?:ation|s|ed)?\b\s*(?:is\s*)?[:：]\s*(.+?)(?:[.;。；](?=\s|$)|$)"),
+              re.compile(r"\bPI proposes to (.+?)(?:\.(?=\s|$)|$)"),
+              re.compile(r"(?:推荐|建议)(?:方案)?[:：]\s*(.+?)(?:[。；]|$)"))
+
+
+def extract_recommendation(line: str) -> str:
+    """The recommendation a request states in its own words (requests filed before 0.6 carry it
+    only in their text); '' when there is none."""
+    body = re.sub(r"\s*_\(added .*?\)_\s*$", "", line).replace("**", "")
+    for pat in _RECOMMEND:
+        m = pat.search(body)
+        if m and m.group(1).strip():
+            return m.group(1).strip()[:200]
+    return ""
+
+
+def chinese_copy(cfg: Config, aid: str) -> dict:
+    """The PI's latest concise Chinese copy of a request (state/notification_copy.json), if any."""
+    copies = read_json(cfg.layout.state / "notification_copy.json", {}) or {}
+    found = [v for k, v in copies.items() if k.startswith(f"action:{aid}:")]
+    return found[-1] if found else {}
+
+
 def adopt_legacy(cfg: Config) -> list[str]:
     """Blocking requests filed before deadlines existed get one now (from deployment), with the
     recommendation stated in their own text. Framework verdict/integrity requests keep waiting."""
@@ -128,7 +151,8 @@ def adopt_legacy(cfg: Config) -> list[str]:
                 (_now() + dt.timedelta(hours=s["timeout_h"])).isoformat(timespec="seconds")
             reg[aid] = {"rule": "claim_verdict" if "00_human/verdicts/" in line else
                         ("integrity" if framework else ""),
-                        "recommend": "" if framework else "the option the request itself recommends",
+                        "recommend": "" if framework else (extract_recommendation(line)
+                                                           or "the option the request itself recommends"),
                         "deadline": deadline, "created": now_iso(), "reminded": now_iso(), "legacy": True}
             adopted.append(aid)
         if adopted:
@@ -153,8 +177,10 @@ def process(cfg: Config) -> list[dict]:
         did = decide(cfg, f"{aid} timed out without a human answer; proceed with the PI recommendation: {rec}",
                      f"[autonomy] decision_timeout_hours passed (deadline {meta['deadline']}); "
                      "reverse if the human disagrees later", aid, by="timeout")
-        human.notify(cfg, f"{aid} 超时未回复，PI 已按推荐方案执行；如不同意请直接回复 {aid} 和你的决定。"
-                          f"背景：推荐方案：{rec[:250]}")
+        cn = chinese_copy(cfg, aid)
+        what = f"（{cn['summary'][:60]}）" if cn.get("summary") else ""
+        human.notify(cfg, f"{aid}{what}超时未回复，PI 已按推荐方案执行；如不同意请直接回复 {aid} 和你的决定。"
+                          f"背景：推荐方案：{rec[:200]}" + (f"。{cn['background'][:150]}" if cn.get("background") else ""))
         with FileLock(_path(cfg)):
             r2 = read_json(_path(cfg), {}) or {}
             r2.setdefault(aid, meta)["timed_out"] = now_iso()
@@ -180,7 +206,10 @@ def remind(cfg: Config) -> list[str]:
             if (now - last).total_seconds() < s["reminder_h"] * 3600:
                 continue
             when = f"，{meta['deadline'][11:16]} 前不回复将按 PI 推荐执行" if meta.get("deadline") else "，此事项会一直等你"
-            human.notify(cfg, f"提醒：{aid} 仍在等你决定{when}。背景：可直接回复“{aid} 你的决定”；状态可发“进展”。")
+            cn = chinese_copy(cfg, aid)
+            what = f"（{cn['summary'][:60]}）" if cn.get("summary") else ""
+            rec = f"PI 推荐：{meta['recommend'][:150]}；" if meta.get("recommend") else ""
+            human.notify(cfg, f"提醒：{aid}{what}仍在等你决定{when}。背景：{rec}可直接回复“{aid} 你的决定”；状态可发“进展”。")
             meta["reminded"] = now_iso()
             sent.append(aid)
         if sent:
