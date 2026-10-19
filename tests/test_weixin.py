@@ -159,6 +159,24 @@ class Weixin(unittest.TestCase):
         args = (self.d / "qa" / "settings.json").read_text(encoding="utf-8")
         self.assertIn(".ssh", args)
 
+    def test_listener_lock_released_on_sighup(self):
+        import signal, subprocess, sys, time as _t
+        from pathlib import Path
+        src = Path(weixin.__file__).resolve().parents[1]
+        lock = self.root.parent / "listener"
+        script = (f"import sys, time; sys.path.insert(0, {str(src)!r})\n"
+                  "from pathlib import Path\nfrom autolab import weixin\nfrom autolab.util import FileLock\n"
+                  "weixin.stop_on_signals()\nlock = FileLock(Path(sys.argv[1])); lock.__enter__()\n"
+                  "try:\n    print('ready', flush=True); time.sleep(60)\nfinally:\n    lock.__exit__(None, None, None)\n")
+        for sig in (signal.SIGHUP, signal.SIGTERM):
+            p = subprocess.Popen([sys.executable, "-c", script, str(lock)], stdout=subprocess.PIPE, text=True)
+            self.assertEqual(p.stdout.readline().strip(), "ready")
+            self.assertTrue(Path(str(lock) + ".lock").is_dir())
+            p.send_signal(sig)
+            p.wait(timeout=10)
+            p.stdout.close()
+            self.assertFalse(Path(str(lock) + ".lock").exists(), f"lock left behind after {sig}")
+
     def test_question_budget_cap(self):
         from autolab import budget
         budget.record_cost(self.cfg, "weixin_qa", 4.8)

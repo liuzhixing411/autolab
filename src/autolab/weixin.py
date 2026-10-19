@@ -682,7 +682,15 @@ def run(cfg, action):
     if not account or not account.get("user_id"):
         raise RuntimeError("Run `autolab weixin login` first")
     client = Client(account)
-    with FileLock(d / "listener"):
+    stop_on_signals()
+    lock = FileLock(d / "listener")
+    try:
+        lock.__enter__()
+    except TimeoutError:
+        owner = read_json(lock.dir / "owner.json", {}) or {}
+        raise RuntimeError(f"another listener holds {lock.dir} (pid {owner.get('pid')}, since {owner.get('created')}). "
+                           "If that process has exited, remove the directory and start again.") from None
+    try:
         print("Listening for the bound Weixin user; Ctrl+C to stop.", flush=True)
         while True:
             try:
@@ -696,3 +704,17 @@ def run(cfg, action):
                 time.sleep(30)
             else:
                 time.sleep(1)
+    finally:
+        lock.__exit__(None, None, None)    # also on SIGHUP/SIGTERM (stop_on_signals)
+
+
+def stop_on_signals():
+    """Turn SIGTERM/SIGHUP into a normal exit so the listener lock is released. A listener stopped
+    by `tmux kill-session` (SIGHUP) used to leave its lock behind; the next start then gave up
+    after 60 s and Weixin stayed silent for seven hours (first-test, 2026-10-18)."""
+    import signal
+
+    def _stop(signum, frame):
+        raise SystemExit(128 + signum)
+    for sig in (signal.SIGTERM, signal.SIGHUP):
+        signal.signal(sig, _stop)
