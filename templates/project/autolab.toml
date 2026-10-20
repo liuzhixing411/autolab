@@ -49,7 +49,7 @@ decision_timeout_hours = 4
 # Rules that always wait for you (no timeout). Add your own keys, e.g. "mpi_code".
 always_ask = ["budget_increase", "gpu", "new_data_source", "research_goal"]
 reminder_hours = 4               # re-notify open blocking requests this often
-blocked_max_idle_min = 180       # when only human answers are awaited, forced PI turns this far apart
+blocked_max_idle_min = 180       # forced PI turns this far apart when requests are open, no job runs and the last turn decided nothing
 
 [weixin.qa]
 # questions sent on Weixin are answered at once by a read-only model run over the project files

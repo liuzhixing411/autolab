@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.6.5 — 2026-10-20
+
+- **Wake rule**: forced PI turns are spaced to `[autonomy] blocked_max_idle_min` (180 min) only when
+  human requests are open, no job is running AND the last turn recorded no new decision; after a
+  productive turn the normal interval (45 min) stays. Before, an open request alone stretched the
+  interval and ready work waited (first-test, 2026-10-20). `autolab wake mark` stores the decision count.
+
 ## 0.6.4 — 2026-10-20
 
 - **Locked plans and new knowledge**: the plan gate re-runs the context-pack search, so a lesson or paper

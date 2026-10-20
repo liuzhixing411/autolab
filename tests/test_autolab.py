@@ -1743,8 +1743,21 @@ class Autonomy(unittest.TestCase):
         go, reasons = wake.check(self.cfg, 45)
         self.assertTrue(any("no PI turn" in r for r in reasons))
         aid = human.request_action(self.cfg, "decision", "x?", True, rule="r", recommend="do y", enforce=True)
+
+        def last_turn(decided):
+            if decided:
+                tasks.decide(self.cfg, "move track B", "work available")
+            wake.mark(self.cfg)
+            s = read_json(self.cfg.layout.state / "wake.json")
+            s["t"] -= 60 * 60
+            write_json(self.cfg.layout.state / "wake.json", s)
+
+        last_turn(decided=True)                                             # a productive turn: keep 45 min
         go, reasons = wake.check(self.cfg, 45)
-        self.assertFalse(go, reasons)                                       # only waiting: 180 min apart
+        self.assertTrue(any("no PI turn" in r for r in reasons), reasons)
+        last_turn(decided=False)                                            # nothing decided: only waiting
+        go, reasons = wake.check(self.cfg, 45)
+        self.assertFalse(go, reasons)                                       # 180 min apart
         self._expire(aid)
         go, reasons = wake.check(self.cfg, 45)
         self.assertTrue(any("past their deadline" in r for r in reasons))

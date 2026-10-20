@@ -40,6 +40,14 @@ def _jobs(cfg: Config) -> dict[str, str]:
         return {}
 
 
+def _decision_count(cfg: Config) -> int:
+    p = cfg.layout.state / "DECISIONS.md"
+    if not p.is_file():
+        return 0
+    import re
+    return len(re.findall(r"(?m)^## D\d+ ", p.read_text(encoding="utf-8")))
+
+
 def check(cfg: Config, max_idle_min: float = 45, now: float | None = None) -> tuple[bool, list[str]]:
     now = now or time.time()
     snap = read_json(_path(cfg))
@@ -52,9 +60,11 @@ def check(cfg: Config, max_idle_min: float = 45, now: float | None = None) -> tu
         reasons.append(f"human requests past their deadline: {late}")
     jobs = _jobs(cfg)
     from autolab.slurm import TERMINAL
-    if autonomy.blocked(cfg) and not any(st not in TERMINAL
-                                         for st in jobs.values()):
-        # everything waits on the human: forced turns would only re-read the same blockers
+    # Space forced turns out only when the lab is really just waiting: requests open, no jobs
+    # running, AND the last turn decided nothing. After a productive turn the normal interval
+    # stays (the PI may have other tracks to move; first-test 2026-10-20: work sat for 1.5 h).
+    idle_last_turn = "decisions" in snap and snap.get("decisions") == snap.get("decisions_before")
+    if idle_last_turn and autonomy.blocked(cfg) and not any(st not in TERMINAL for st in jobs.values()):
         max_idle_min = max(max_idle_min, autonomy.settings(cfg)["blocked_max_idle_min"])
     if now - snap.get("t", 0) > max_idle_min * 60:
         reasons.append(f"no PI turn for more than {max_idle_min:.0f} min")
@@ -74,7 +84,11 @@ def check(cfg: Config, max_idle_min: float = 45, now: float | None = None) -> tu
 
 
 def mark(cfg: Config) -> dict:
+    """After a turn: `decisions_before` is the count at the previous mark, so check() can tell
+    whether the turn just finished recorded any decision."""
+    prev = read_json(_path(cfg)) or {}
     snap = {"t": time.time(), "at": now_iso(), "cards": _cards(cfg),
-            "escalations": _escalations(cfg), "jobs": _jobs(cfg)}
+            "escalations": _escalations(cfg), "jobs": _jobs(cfg),
+            "decisions": _decision_count(cfg), "decisions_before": prev.get("decisions")}
     write_json(_path(cfg), snap)
     return snap
