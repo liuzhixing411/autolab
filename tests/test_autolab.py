@@ -1525,6 +1525,30 @@ class ResearchSteering(unittest.TestCase):
         self.assertTrue(d("Bash", command="autolab outcome E001 --engineering valid --hypothesis n/a --value refine --why x"))
         self.assertTrue(d("Bash", command="cat experiments/E001/outcomes.jsonl"))
 
+    def test_locked_plan_answers_new_items_in_amendments(self):
+        from autolab.util import append_jsonl, now_iso
+        res, pack = passing_plan(self.cfg)
+        self.assertTrue(res["ok"], res)
+        exp = self.cfg.layout.experiments / "E001"
+        append_jsonl(exp / "jobs.jsonl", {"job": "1", "eid": "E001", "submitted": now_iso()})   # plan now locked
+        lid = tasks.add_lesson(self.cfg, "Bubble breakup timings need pinned cores", "E001", ["bubble", "breakup"],
+                               {"resources": "pinned cores"}, recheck="other nodes")
+        res = knowledge.check_plan(self.cfg, "E001")
+        self.assertIn(lid, " ".join(res["problems"]))
+        self.assertIn("plan_amendments.md", " ".join(res["problems"]))
+        write(exp / "plan_amendments.md", f"## A1 (PI): prior knowledge {lid}, added after the lock\n"
+                                          f"{lid} applies: timings here already ran on pinned cores, no change to the rule.\n")
+        self.assertTrue(knowledge.check_plan(self.cfg, "E001")["ok"])
+        # an item that was in the pack before the lock must still be answered in the plan itself
+        plan = exp / "plan.md"
+        text = plan.read_text(encoding="utf-8")
+        if pack["items"]:
+            first = pack["items"][0]["id"]
+            plan.write_text("\n".join(l for l in text.splitlines() if first not in l) + "\n", encoding="utf-8")
+            write(exp / "plan_amendments.md", (exp / "plan_amendments.md").read_text(encoding="utf-8")
+                  + f"{first} answered only here, which does not count for an original pack item.\n")
+            self.assertFalse(knowledge.check_plan(self.cfg, "E001")["ok"])
+
     def test_legacy_experiment_without_evaluator_can_be_closed(self):
         from autolab.util import append_jsonl
         passing_plan(self.cfg)

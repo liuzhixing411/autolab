@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.6.4 — 2026-10-20
+
+- **Locked plans and new knowledge**: the plan gate re-runs the context-pack search, so a lesson or paper
+  added after a plan was locked made the gate fail for good (the hook forbids editing a locked plan).
+  For a locked plan, items that appeared after the lock may now be answered in `plan_amendments.md`
+  (a non-heading line naming the ID); items that were in the pack before the lock must still be
+  answered in the plan. Method, rules and the plan text are unchanged (first-test E032, LS051, A042).
+
 ## 0.6.3 — 2026-10-19
 
 - **Human edits no longer stop the lab.** The integrity guard treated any unreceipted change in

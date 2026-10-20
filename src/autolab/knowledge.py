@@ -363,13 +363,22 @@ def check_plan(cfg: Config, eid: str) -> dict:
         new = [c for i, c in current.items() if i not in known]
         items += [{**c, "new": True} for c in new]
         lines = consulted.splitlines()
+        # Once a job ran the plan is locked; an item that appeared afterwards (a new lesson, a new
+        # paper) is answered in plan_amendments.md instead. Before 0.6.4 such a plan could never pass
+        # its gate again (first-test E032, lesson LS051 added by E031 after E032 was locked).
+        locked = (exp / "jobs.jsonl").is_file()
+        amend = (exp / "plan_amendments.md").read_text(encoding="utf-8").splitlines() \
+            if locked and (exp / "plan_amendments.md").is_file() else []
         for item in items:
             hit = [ln for ln in lines if item["id"] in ln]
+            if not hit and item.get("new") and amend:
+                hit = [ln for ln in amend if item["id"] in ln and not ln.lstrip().startswith("#")]
             if not hit:
                 if item.get("new"):
                     problems.append(f"context pack {pack['id']} is stale: new relevant item {item['id']} "
                                     f"({item['kind']}{', MUST' if item['must_read'] else ''}) \"{item['title'][:60]}\" "
-                                    "is not answered; add a line under Prior knowledge consulted or rebuild the pack")
+                                    "is not answered; add a line under Prior knowledge consulted or rebuild the pack"
+                                    + (" (the plan is locked: answer it in plan_amendments.md, one line naming the ID)" if locked else ""))
                 else:
                     problems.append(f"plan does not answer context item {item['id']} ({item['kind']})")
             elif item["must_read"] and len(hit[0].split(item["id"], 1)[1].strip(" :-—*")) < 20:
