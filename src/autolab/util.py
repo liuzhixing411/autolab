@@ -122,7 +122,8 @@ def sections(body: str) -> dict[str, str]:
 
 _ID_PREFIX = {"experiment": "E", "claim": "C", "finding": "F", "task": "T",
               "literature": "L", "upload": "U", "context_pack": "CP", "action": "A",
-              "issue": "I", "review": "R", "decision": "D", "lesson": "LS", "search": "S", "novelty": "N"}
+              "issue": "I", "review": "R", "decision": "D", "lesson": "LS", "search": "S", "novelty": "N",
+              "defect": "DF"}
 
 
 class FileLock:

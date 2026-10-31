@@ -70,6 +70,7 @@ DEFAULTS: dict[str, Any] = {
         "require_candidates": True,        # plan gate: candidate cards + a Discrimination section
         "require_outcomes": True,          # finished experiments must get `autolab outcome` before new plans
         "context_pack_max_items": 12,
+        "context_pack_max_failures": 5,    # each one is a mandatory answer in the plan
         "download_request_tiers": ["A"],      # only these tiers trigger automatic download requests
         # novelty audits (novelty.py): a new line of work, or a plan above this many core-hours, needs one
         "require_novelty": True,
@@ -80,7 +81,7 @@ DEFAULTS: dict[str, Any] = {
         "novelty_max_age_days": 90,
     },
     # situations that require an action (due.py): shown first in the digest; `blocks` items stop new plans
-    "triggers": {"enabled": True, "refine_streak": 3, "value_every": 3, "lit_watch_every": 20},
+    "triggers": {"enabled": True, "refine_streak": 3, "value_every": 3, "lit_watch_every": 20, "similar_failure": 0.16},
     # literature APIs (scholar.py): keys are read from this file by `autolab lit`, never by agents
     "literature": {"keys_file": "~/.scholar_keys.env", "queue_dir": "~/.cache/autolab/scholar",
                    "s2_min_interval_s": 1.5, "tries": 4, "backoff_s": 3.0, "cache_days": 14,

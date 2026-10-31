@@ -143,7 +143,9 @@ def run(cfg: Config) -> dict:
         L += [f"## Retrospective due (last at tick {retro_last or 'never'})",
               f"Dispatch one student (analysis, sonnet) to write `experience/RETRO-{counter}.md` from state/DECISIONS.md, "
               "rejected claims, escalations, blocked tasks and handoff anomalies since then: what went wrong or slow, "
-              "the root cause, and a rule that would have prevented it. Add each rule with its scope: "
+              "the root cause, and a rule that would have prevented it. A shared baseline, tool or analysis that proved "
+              "weaker than assumed goes in as a defect, so the findings built on it are answered for: `autolab defect new "
+              "\"<what>\" --found-by <id> --affects F..,E.. --grep <regex>`. Add each rule with its scope: "
               "`autolab lesson add \"<rule>\" --origin <E-id|RETRO-n> --when data=... --when resolution=... "
               "--evidence <file> --confidence low|medium|high --recheck \"<when it may stop holding>\" --keywords k1,k2`; "
               "record new supporting or contradicting experiments with `autolab lesson support|counter <LS-id>`. "

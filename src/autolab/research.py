@@ -20,14 +20,16 @@ it afterwards must be explained in plan_amendments.md before an outcome is accep
 from __future__ import annotations
 
 import json
+import math
 import re
+from collections import Counter
 from pathlib import Path
 
 from autolab.config import Config
 from autolab.util import (FileLock, append_jsonl, now_iso, read_frontmatter, read_json, read_jsonl,
-                          sha256_file, write_atomic, write_json)
+                          sha256_file, tokens, write_atomic, write_json)
 
-CARD_FIELDS = ("statement", "origin", "contribution", "closest_work", "mechanism_difference", "evidence_for",
+CARD_FIELDS = ("statement", "origin", "contribution", "closest_work", "mechanism_difference", "differs_from", "evidence_for",
                "evidence_against", "key_uncertainty", "discriminating_experiment", "cost_estimate", "continue_if",
                "pause_if", "kill_if", "novelty_audit")
 CARD_REQUIRED = ("statement", "closest_work", "mechanism_difference", "key_uncertainty",
@@ -41,12 +43,75 @@ def _cdir(cfg: Config) -> Path:
     return cfg.layout.state / "candidates"
 
 
+def failures(cfg: Config) -> list[dict]:
+    """What the lab tried and lost: killed candidates, and valid experiments that refuted their
+    hypothesis or ended a direction. first-test had 22 of these and no context pack showed one: packs
+    read only a wiki nobody filled."""
+    out = []
+    for p in sorted(_cdir(cfg).glob("H*.md")):
+        meta, body = read_frontmatter(p)
+        if meta.get("status") == "killed":
+            statement = str(meta.get("statement", ""))
+            out.append({"id": p.stem, "kind": "failed_idea", "recorded": True, "title": statement, "path": p,
+                        "text": f"{statement} {meta.get('mechanism_difference', '')} {body}"})
+    for exp in sorted(cfg.layout.experiments.glob("E*")):
+        o = read_json(exp / "outcome.json") or {}
+        if o.get("engineering") == "valid" and (o.get("hypothesis") == "refutes" or o.get("value") in ("stop", "pivot")):
+            tested = str(read_frontmatter(exp / "plan.md")[0].get("hypothesis", "")) if (exp / "plan.md").is_file() else ""
+            out.append({"id": exp.name, "kind": "failed_idea", "recorded": True, "title": tested or o.get("reason", ""),
+                        "path": exp / "outcome.json", "text": f"{tested} {o.get('reason', '')}"})
+    return out
+
+
+def similar_failures(cfg: Config, text: str, skip: str = "") -> list[dict]:
+    """Failed records that read like `text`, closest first: cosine over idf-weighted word sets, with
+    the lab's own cards and failures as the corpus, so a project's everyday words count for little.
+    Replaying first-test's 30 cards in creation order, the default threshold flags 5: among them H30,
+    which retried the bookkeeping fusion E011 had closed, and H26 and H35, which went on along lines
+    H25 and H34 had lost. Of 6 short rewordings of failed ideas it caught 5 and let 2 unrelated ideas
+    pass. It compares words: an idea restated in other words gets through (the sixth), and then only
+    the context pack and `idea_review` stand in the way. It needs no dependency and can be checked by hand."""
+    if not cfg["triggers"].get("enabled", True):
+        return []
+    from autolab.knowledge import _claim_dirs
+    rejected = [{**r, "text": r["title"]} for r in _claim_dirs(cfg.layout.rejected, "rejected_claim")]
+    records = [r for r in failures(cfg) + rejected if r["id"] != skip]
+    query = tokens(text)
+    docs = [tokens(r["text"]) for r in records]
+    live = [read_frontmatter(p)[0] for p in _cdir(cfg).glob("H*.md")]
+    cards = [tokens(f"{c.get('statement', '')} {c.get('mechanism_difference', '')}") for c in live if c.get("status") != "killed"]
+    corpus = docs + cards + [query]
+    df = Counter(w for d in corpus for w in d)
+    weight = {w: math.log(1 + len(corpus) / n) ** 2 for w, n in df.items()}
+    norm = lambda d: math.sqrt(sum(weight[w] for w in d))
+    hits = []
+    for r, d in zip(records, docs):
+        score = sum(weight[w] for w in query & d) / (norm(query) * norm(d)) if norm(query) and norm(d) else 0.0
+        if score >= float(cfg["triggers"]["similar_failure"]):
+            hits.append({"id": r["id"], "score": round(score, 3), "title": r["title"]})
+    return sorted(hits, key=lambda h: -h["score"])
+
+
+def _unanswered_failures(cfg: Config, hid: str, statement: str, mechanism: str, differs: str) -> list[dict]:
+    return [h for h in similar_failures(cfg, f"{statement} {mechanism}", skip=hid) if h["id"] not in differs]
+
+
+def _failure_message(hid: str, hits: list[dict]) -> str:
+    return (f"candidate {hid} reads like what already failed: "
+            + "; ".join(f"{h['id']} ({h['score']}) {h['title'][:90]}" for h in hits)
+            + f". Read them, then say what is different this time, naming each: --differs-from \"{hits[0]['id']}: ...\"")
+
+
 def new_candidate(cfg: Config, hid: str, statement: str, **fields) -> Path:
     if not re.fullmatch(r"H\d+[a-z]?", hid):
         raise ValueError("candidate id must look like H14 (the hypothesis id)")
     p = _cdir(cfg) / f"{hid}.md"
     if p.exists():
         raise FileExistsError(f"{p} exists; edit it instead")
+    hits = _unanswered_failures(cfg, hid, statement, str(fields.get("mechanism_difference", "")),
+                                str(fields.get("differs_from", "")))
+    if hits:
+        raise ValueError(_failure_message(hid, hits))
     vals = {"statement": statement, **{k: fields.get(k, "") for k in CARD_FIELDS if k != "statement"}}
     fm = ["+++", f'id = "{hid}"', 'status = "open"', f'created = "{now_iso()}"',
           'priority = ""            # advisory only (e.g. from a comparison); never evidence of novelty']
@@ -75,6 +140,11 @@ def card_problems(cfg: Config, hid: str) -> list[str]:
         out.append(f"candidate {hid}: origin must be one of {ORIGINS}")
     if c.get("status") == "killed":
         out.append(f"candidate {hid} is killed; reopen it with a recorded decision before testing it again")
+    if "differs_from" in c:                                   # cards from before 0.7.1 have no such field
+        hits = _unanswered_failures(cfg, hid, str(c.get("statement", "")), str(c.get("mechanism_difference", "")),
+                                    str(c.get("differs_from", "")))
+        if hits:
+            out.append(_failure_message(hid, hits).replace("--differs-from", "in the card's differs_from:"))
     return out
 
 

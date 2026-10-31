@@ -38,6 +38,7 @@ def protected(cfg: Config) -> dict[str, str]:
               cfg.layout.state / "due.json", cfg.layout.literature / "search_log.jsonl"]
     for name in ("audit.json", "verdict.json", "reviews.json", "override.json"):
         files += list(cfg.layout.novelty.glob(f"*/{name}"))
+    files += list(cfg.layout.defects.glob("DF*.json"))
     files += list(cfg.layout.reviews.rglob("*"))
     for pattern in ("*/plan_gate.json", "*/jobs.jsonl", "*/jobs_usage.jsonl", "*/submission_pending.json"):
         files += list(cfg.layout.experiments.glob(pattern))

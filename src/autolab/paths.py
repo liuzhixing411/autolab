@@ -126,6 +126,10 @@ class Layout:
         return self.state / "novelty"
 
     @property
+    def defects(self) -> Path:
+        return self.state / "defects"
+
+    @property
     def human_snapshot(self) -> Path:
         return self.state / "human_snapshot.json"
 

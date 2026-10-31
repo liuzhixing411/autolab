@@ -345,7 +345,9 @@ def _rebuild_index(cfg: Config) -> None:
         if rec and not rec.get("superseded_by"):
             rows.append(f"| {rec['id']} | {rec['grade']} | {rec['statement']} | "
                         f"{', '.join(rec['experiments'])} | {rec['claim']} |")
+    from autolab.defects import notes
+    known = notes(cfg)
     write_atomic(cfg.layout.findings / "INDEX.md",
                  "# Findings (written only by `autolab gate claim`)\n\n"
                  "| ID | Grade | Statement | Experiments | Claim |\n|---|---|---|---|---|\n" +
-                 "\n".join(rows) + "\n")
+                 "\n".join(rows) + "\n" + ("\n## Known defects\n\n" + "\n".join(known) + "\n" if known else ""))

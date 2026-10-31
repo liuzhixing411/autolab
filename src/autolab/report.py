@@ -68,7 +68,7 @@ def metrics(cfg: Config) -> dict:
     credible = len(current)
 
     # where ideas came from and whether anyone checked they are new (first-test could not say)
-    from autolab import novelty, skills
+    from autolab import defects, novelty, skills
     cards = [research.candidate(cfg, c["id"]) or {} for c in research.list_candidates(cfg)]
     origins = Counter(str(c.get("origin") or "unrecorded") for c in cards)
     by_hyp = {c.get("id"): str(c.get("origin") or "unrecorded") for c in cards}
@@ -77,6 +77,7 @@ def metrics(cfg: Config) -> dict:
         hyps = [h for e in f.get("experiments", []) for h in (latest.get(e) or {}).get("hypotheses", [])]
         found_by[next((by_hyp[h] for h in hyps if h in by_hyp), "unrecorded")] += 1
     audits = novelty.list_audits(cfg)
+    known_defects = defects.status(cfg)
     gate_rows = [r for r in skills.report(cfg) if r["use"] == "gate"]
 
     m = {
@@ -112,6 +113,8 @@ def metrics(cfg: Config) -> dict:
         "novelty": {"audits": len(audits), "open": sum(a["verdict"] == "open" for a in audits),
                     "verdicts": dict(Counter(a["verdict"] for a in audits if a["verdict"] != "open")),
                     "literature_searches": len(read_jsonl(L.literature / "search_log.jsonl"))},
+        "defects": {"known": len(known_defects), "open": sum(bool(d["open"]) for d in known_defects),
+                    "findings_unanswered": sorted({f for d in known_defects for f in d["open"]})},
         "skills": {"mounted": len(skills.skill_sources(cfg)), "invoked": len(skills.invoked_since(cfg)),
                    "forced_never_invoked": [r["skill"] for r in gate_rows if not r["calls"]] if skills.have_logs(cfg) else []},
     }

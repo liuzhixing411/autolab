@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.7.1 — 2026-10-31
+
+Two holes the retrospective audit of first-test showed.
+
+- **Failed ideas**: `autolab candidate new` compares a new idea with killed candidates, refuted or abandoned
+  experiments and rejected claims, using idf-weighted word overlap over the lab's own records. A close match must
+  be answered in `differs_from`, naming each record; the plan gate checks this too. Context packs now show the
+  closest failures as mandatory items: in first-test 22 failures existed and no pack ever showed one.
+  `triggers.similar_failure` (0.16) was set by replaying first-test's 30 cards in creation order: it flags 5, among
+  them H30, which retried what E011 had closed. It compares words, so an idea restated in other words gets through;
+  the context pack and `idea_review` remain as the other layers. Packs from before 0.7.1 are unchanged.
+- **Known defects** (`defects.py`, `autolab defect new|resolve|list`): T175 found every speedup measured against a
+  weaker cc3d call than the library offers; new experiments changed and F002-F010 stayed as they were. A defect now
+  lists the findings it touches, by id or by `--grep` over their code, which also catches later findings. Each must
+  be re-measured, re-scoped or shown not to be affected. Until then it is a due item that stops new plans, except a
+  plan that declares `fixes = ["DF001"]`, and `findings/INDEX.md` and `state/CONTRIBUTIONS.md` carry a note.
+
 ## 0.7.0 — 2026-10-31
 
 From an audit of first-test (171 ticks, about 490 USD, 10 findings). Its rigour held; three things had no

@@ -52,6 +52,7 @@ enabled = true
 refine_streak = 3                # results in a row that did not move a line forward -> ideation round
 value_every = 3                  # accepted findings between value reviews
 lit_watch_every = 20             # ticks between literature watches
+similar_failure = 0.16           # a new candidate this close to a failed one must say what is different
 
 [literature]
 keys_file = "~/.scholar_keys.env"   # OPENALEX_API_KEY, SEMANTIC_SCHOLAR_API_KEY, CONTACT_EMAIL; read by `autolab lit` only

@@ -464,9 +464,12 @@ def write_ledger(cfg: Config) -> Path:
             continue
         value = str(read_frontmatter(d / "claim.md")[0].get("novelty", "") or "")
         (plain if value == NONE_CLAIMED else audited if value else unset).append(f"{d.name}{f' ({value})' if value and value != NONE_CLAIMED else ''}")
+    from autolab.defects import pending
+    defects = pending(cfg)
     lines += ["", "## Findings", f"- with an audited contribution: {', '.join(audited) or 'none'}",
               f"- measurements claiming nothing new: {', '.join(plain) or 'none'}",
-              f"- not stated: {', '.join(unset) or 'none'}", ""]
+              f"- not stated: {', '.join(unset) or 'none'}",
+              f"- under an open defect: {', '.join(f'{f} ({chr(44).join(d)})' for f, d in sorted(defects.items())) or 'none'}", ""]
     path = cfg.layout.state / "CONTRIBUTIONS.md"
     write_atomic(path, "\n".join(lines))
     return path

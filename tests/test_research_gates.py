@@ -9,7 +9,7 @@ from unittest.mock import patch
 
 import test_autolab as fixtures
 from test_autolab import make_project, passing_plan, run_cli, write
-from autolab import (budget, due, execution, fulltext, guard, handoff, hooks, knowledge, novelty, project,
+from autolab import (budget, defects, due, execution, fulltext, guard, handoff, hooks, knowledge, novelty, project,
                      report, research, reviewer, scholar, skills, tasks, tick)
 from autolab.util import append_jsonl, now_iso, read_json, read_jsonl, write_json
 
@@ -20,6 +20,202 @@ LIMIT_LOG = "\n".join(json.dumps(x) for x in (
     {"type": "assistant", "error": "rate_limit", "api_error_status": "429", "message": {"model": "<synthetic>"}},
     {"type": "result", "subtype": "success", "is_error": True, "api_error_status": "429", "total_cost_usd": 0,
      "result": "You've hit your weekly limit"})) + "\n"
+
+
+class FailedIdeas(unittest.TestCase):
+    KILLED = "Fusing the per-flip bookkeeping into one compiled pass halves the update cost of the tracker"
+
+    def setUp(self):
+        self.root, self.cfg = make_project()
+        self.cfg.data["triggers"]["enabled"] = True
+        research.new_candidate(self.cfg, "H1", self.KILLED, origin="pi", mechanism_difference="one fused compiled loop")
+        research.new_candidate(self.cfg, "H2", "Screening deletions by a topological test avoids the reconnection search",
+                               origin="pi", mechanism_difference="simple point test before searching")
+        research.set_candidate(self.cfg, "H1", "killed", "the fused loop saved only 13 percent")
+
+    def test_a_new_card_like_a_failed_one_must_say_what_is_different(self):
+        again = "Fusing the per-flip bookkeeping in one compiled pass halves the tracker update cost on the wave"
+        with self.assertRaisesRegex(ValueError, "already failed: H1"):
+            research.new_candidate(self.cfg, "H3", again, origin="pi")
+        self.assertFalse((self.cfg.layout.state / "candidates" / "H3.md").exists())
+        with self.assertRaisesRegex(ValueError, "H1"):                     # an answer has to name the record
+            research.new_candidate(self.cfg, "H3", again, origin="pi", differs_from="this time it is different")
+        research.new_candidate(self.cfg, "H3", again, origin="pi", differs_from="H1: inlined by hand, no bounds checks")
+        self.assertIn("inlined", research.candidate(self.cfg, "H3")["differs_from"])
+
+    def test_an_unrelated_idea_passes(self):
+        research.new_candidate(self.cfg, "H3", "Coarsening droplets obey a universal size law at late times", origin="pi")
+
+    def test_a_short_restatement_in_the_same_words_is_caught(self):
+        self.assertEqual([h["id"] for h in research.similar_failures(self.cfg, "fused compiled pass halves the update cost")], ["H1"])
+
+    def test_the_comparison_is_by_words_and_says_so(self):
+        self.assertEqual(research.similar_failures(self.cfg, "merging the per-cell accounting code cuts the time spent"), [])
+
+    def test_refuted_experiments_and_rejected_claims_count(self):
+        exp = self.cfg.layout.experiments / "E007"
+        write(exp / "plan.md", '+++\nhypothesis = "Vectorising the mask comparison shrinks change extraction below a third"\n+++\n')
+        write_json(exp / "outcome.json", {"engineering": "valid", "hypothesis": "refutes", "value": "refine", "reason": "only 11 percent"})
+        write(self.cfg.layout.rejected / "C003" / "claim.md", '+++\nstatement = "Label propagation across ranks scales to 128 cores"\n+++\n')
+        self.assertEqual([r["id"] for r in research.failures(self.cfg)], ["H1", "E007"])
+        self.assertEqual([h["id"] for h in research.similar_failures(self.cfg, "Vectorising the mask comparison shrinks change extraction")], ["E007"])
+        self.assertEqual([h["id"] for h in research.similar_failures(self.cfg, "Label propagation across ranks scales to 128 cores")], ["C003"])
+
+    def test_an_invalid_run_is_not_a_failed_idea(self):
+        write_json(self.cfg.layout.experiments / "E008" / "outcome.json", {"engineering": "invalid", "hypothesis": "n/a", "value": "stop", "reason": "x"})
+        self.assertEqual([r["id"] for r in research.failures(self.cfg)], ["H1"])
+
+    def test_a_failure_after_the_card_is_asked_about_at_the_plan_gate(self):
+        research.new_candidate(self.cfg, "H4", "Compressing the label array by blocks shortens dense output on the wave", origin="pi",
+                               closest_work="L1", mechanism_difference="block compressed labels", key_uncertainty="u",
+                               discriminating_experiment="d", continue_if="c", kill_if="k")
+        self.assertEqual(research.card_problems(self.cfg, "H4"), [])
+        research.new_candidate(self.cfg, "H5", "Block compressed labels shorten dense output on the wave case", origin="pi",
+                               mechanism_difference="compressing the label array by blocks")
+        research.set_candidate(self.cfg, "H5", "killed", "no gain")
+        self.assertTrue(any("already failed: H5" in p for p in research.card_problems(self.cfg, "H4")))
+        research.set_field(self.cfg, "H4", "differs_from", "H5: keeps the dense array as well")
+        self.assertEqual(research.card_problems(self.cfg, "H4"), [])
+
+    def test_cards_from_before_this_version_are_left_alone(self):
+        card = self.cfg.layout.state / "candidates" / "H9.md"
+        write(card, '+++\nid = "H9"\nstatus = "open"\n' + f'statement = "{self.KILLED}"\n'
+              'closest_work = "L"\nmechanism_difference = "m"\nkey_uncertainty = "u"\ndiscriminating_experiment = "d"\n'
+              'continue_if = "c"\nkill_if = "k"\n+++\n')
+        self.assertEqual(research.card_problems(self.cfg, "H9"), [])
+
+    def test_packs_show_the_closest_failures_as_must_read(self):
+        pack = knowledge.build_context_pack(self.cfg, "fused compiled bookkeeping pass", ["per-flip", "tracker", "update"])
+        item = next(i for i in pack["items"] if i["id"] == "H1")
+        self.assertEqual((item["kind"], item["must_read"]), ("failed_idea", True))
+        text = (self.cfg.layout.context_packs / f"{pack['id']}.md").read_text(encoding="utf-8")
+        self.assertIn("## failed idea", text)
+
+    def test_only_the_closest_failures_enter_a_pack(self):
+        self.cfg.data["gates"]["context_pack_max_failures"] = 1
+        research.new_candidate(self.cfg, "H6", "Fused compiled bookkeeping pass for the tracker update at per-flip cost", origin="pi",
+                               differs_from="H1: a guess")
+        research.set_candidate(self.cfg, "H6", "killed", "no")
+        pack = knowledge.build_context_pack(self.cfg, "fused compiled bookkeeping pass", ["per-flip", "tracker", "update"])
+        self.assertEqual(len([i for i in pack["items"] if i["kind"] == "failed_idea"]), 1)
+        pack = knowledge.build_context_pack(self.cfg, "fused", ["unrelated"])              # one shared word is not enough
+        self.assertEqual([i for i in pack["items"] if i["kind"] == "failed_idea"], [])
+
+    def test_a_pack_from_before_failures_does_not_go_stale(self):
+        ids = {i["id"] for i in knowledge._select(self.cfg, {"fused", "compiled", "bookkeeping", "pass", "tracker"}, False)}
+        self.assertNotIn("H1", ids)
+
+
+class KnownDefects(unittest.TestCase):
+    WEAK = r"connected_components\((?![^)]*binary_image)"
+
+    def setUp(self):
+        self.root, self.cfg = make_project()
+        self.cfg.data["triggers"]["enabled"] = True
+        self.finding("F001", "E001", "cc3d.connected_components(m, connectivity=6)")
+        self.finding("F002", "E002", "cc3d.connected_components(m, connectivity=6, binary_image=True)")
+
+    def finding(self, fid, eid, code):
+        write(self.cfg.layout.experiments / eid / "code" / "run.py", code + "\n")
+        write_json(self.cfg.layout.findings / fid / "finding.json",
+                   {"id": fid, "claim": "C" + fid[1:], "grade": "B", "statement": f"speedup of {fid}", "experiments": [eid],
+                    "accepted": now_iso()})
+        write(self.cfg.layout.findings / fid / "claim.md", '+++\nstatement = "s"\n+++\n')
+
+    def outcome(self, eid, engineering="valid"):
+        write_json(self.cfg.layout.experiments / eid / "outcome.json", {"engineering": engineering, "hypothesis": "supports",
+                                                                        "value": "continue", "reason": "r", "at": now_iso()})
+
+    def test_grep_finds_the_findings_whose_code_has_the_problem(self):
+        write(self.cfg.layout.experiments / "E002" / "results" / "old.py", "cc3d.connected_components(m)\n")   # outputs do not count
+        rec = defects.new(self.cfg, "cc3d called without binary_image", "T175", [], self.WEAK, "0.76-0.87 of the default call")
+        self.assertEqual((rec["id"], rec["touches"]), ("DF001", ["F001"]))
+        self.assertIn("DF001", (self.cfg.layout.state / "DECISIONS.md").read_text(encoding="utf-8"))
+
+    def test_experiments_stand_for_the_findings_built_on_them(self):
+        self.assertEqual(defects.new(self.cfg, "bad reference", "R0009", ["E002"])["touches"], ["F002"])
+
+    def test_a_later_finding_with_the_same_mistake_is_caught(self):
+        defects.new(self.cfg, "cc3d weak call", "T175", [], self.WEAK)
+        self.finding("F003", "E003", "cc3d.connected_components(m)")
+        self.assertEqual(defects.status(self.cfg)[0]["open"], ["F001", "F003"])
+
+    def test_nothing_touched_or_a_bad_pattern_is_refused(self):
+        with self.assertRaisesRegex(ValueError, "touches no current finding"):
+            defects.new(self.cfg, "x", "T1", [], "no_such_call")
+        with self.assertRaisesRegex(ValueError, "--grep"):
+            defects.new(self.cfg, "x", "T1", [], "(")
+        with self.assertRaises(KeyError):
+            defects.new(self.cfg, "x", "T1", ["F099"])
+        with self.assertRaisesRegex(ValueError, "found"):
+            defects.new(self.cfg, "x", "", ["F001"])
+
+    def test_an_open_defect_stops_plans_except_the_one_that_fixes_it(self):
+        defects.new(self.cfg, "cc3d weak call", "T175", ["F001"])
+        self.assertTrue(any("defect:DF001" in b for b in due.plan_blockers(self.cfg)))
+        self.assertFalse(any("defect:DF001" in b for b in due.plan_blockers(self.cfg, ["defect:DF001"])))
+        passing_plan(self.cfg)
+        plan = self.cfg.layout.experiments / "E001" / "plan.md"
+        res = knowledge.check_plan(self.cfg, "E001")
+        self.assertTrue(any("defect:DF001" in p for p in res["problems"]), res["problems"])
+        plan.write_text(plan.read_text(encoding="utf-8").replace("+++\n", '+++\nfixes = ["DF001"]\n', 1), encoding="utf-8")
+        self.assertFalse(any("defect:DF001" in p for p in knowledge.check_plan(self.cfg, "E001")["problems"]))
+
+    def test_each_finding_is_answered_and_the_item_closes(self):
+        defects.new(self.cfg, "cc3d weak call", "T175", ["F001", "F002"], correction="about 0.8")
+        with self.assertRaisesRegex(ValueError, "--why"):
+            defects.resolve(self.cfg, "DF001", "F001", "rescoped", "")
+        with self.assertRaisesRegex(ValueError, "--how"):
+            defects.resolve(self.cfg, "DF001", "F001", "ignored", "x")
+        with self.assertRaises(KeyError):
+            defects.resolve(self.cfg, "DF001", "F099", "rescoped", "x")
+        res = defects.resolve(self.cfg, "DF001", "F001", "rescoped", "S is 1.5 against the strongest call")
+        self.assertEqual(res["open"], ["F002"])
+        self.assertTrue(any(i["key"] == "defect:DF001" for i in due.compute(self.cfg)))
+        defects.resolve(self.cfg, "DF001", "F002", "not_affected", "exactness only, no timing")
+        self.assertFalse(any(i["key"] == "defect:DF001" for i in due.compute(self.cfg)))
+
+    def test_a_remeasurement_has_to_be_newer_than_the_defect(self):
+        self.outcome("E001")
+        old = defects.new(self.cfg, "cc3d weak call", "T175", ["F001"])
+        rec = read_json(self.cfg.layout.defects / f"{old['id']}.json")
+        write_json(self.cfg.layout.defects / f"{old['id']}.json", {**rec, "at": "2099-01-01T00:00:00-04:00"})
+        with self.assertRaisesRegex(ValueError, "--evidence"):
+            defects.resolve(self.cfg, "DF001", "F001", "remeasured", "redone", "E001")
+        with self.assertRaisesRegex(ValueError, "--evidence"):
+            defects.resolve(self.cfg, "DF001", "F001", "remeasured", "redone", "")
+        write_json(self.cfg.layout.defects / f"{old['id']}.json", rec)
+        self.outcome("E002", engineering="invalid")
+        with self.assertRaisesRegex(ValueError, "--evidence"):
+            defects.resolve(self.cfg, "DF001", "F001", "remeasured", "redone", "E002")
+        self.assertEqual(defects.resolve(self.cfg, "DF001", "F001", "remeasured", "1.5 now", "E001")["open"], [])
+
+    def test_a_superseded_finding_no_longer_needs_an_answer(self):
+        defects.new(self.cfg, "cc3d weak call", "T175", ["F001"])
+        rec = read_json(self.cfg.layout.findings / "F001" / "finding.json")
+        write_json(self.cfg.layout.findings / "F001" / "finding.json", {**rec, "superseded_by": "F002"})
+        self.assertEqual(defects.status(self.cfg)[0]["open"], [])
+
+    def test_readers_of_the_findings_see_it(self):
+        defects.new(self.cfg, "cc3d weak call", "T175", ["F001", "F002"], correction="about 0.8")
+        index = self.cfg.layout.findings / "INDEX.md"
+        ledger = self.cfg.layout.state / "CONTRIBUTIONS.md"
+        self.assertIn("not yet answered: F001, F002", index.read_text(encoding="utf-8"))
+        self.assertIn("Known size: about 0.8", index.read_text(encoding="utf-8"))
+        self.assertIn("under an open defect: F001 (DF001), F002 (DF001)", ledger.read_text(encoding="utf-8"))
+        defects.resolve(self.cfg, "DF001", "F001", "rescoped", "S is 1.5 against the strongest call")
+        self.assertIn("F001 rescoped: S is 1.5", index.read_text(encoding="utf-8"))
+        self.assertEqual(report.metrics(self.cfg)["defects"], {"known": 1, "open": 1, "findings_unanswered": ["F002"]})
+
+    def test_commands_and_protection(self):
+        rc, out = run_cli("--project", str(self.root), "defect", "new", "cc3d weak call", "--found-by", "T175", "--grep", self.WEAK)
+        self.assertEqual(rc, 0, out)
+        rc, out = run_cli("--project", str(self.root), "defect", "resolve", "DF001", "F001", "--how", "not_affected", "--why", "no timing")
+        self.assertEqual(rc, 0, out)
+        rc, out = run_cli("--project", str(self.root), "defect", "list")
+        self.assertIn('"open": []', out)
+        self.assertTrue(hooks.CLI_OWNED.match("state/defects/DF001.json"))
+        self.assertIn("state/defects/DF001.json", guard.protected(self.cfg))
 
 
 class ReviewerQuota(unittest.TestCase):

@@ -398,6 +398,20 @@ def cmd_due(a):
         _out(due.compute(cfg))
 
 
+def cmd_defect(a):
+    from autolab import defects
+    cfg = _cfg(a)
+    if a.action == "new":
+        _out(defects.new(cfg, a.what or "", a.found_by or "", [x.strip() for x in (a.affects or "").split(",") if x.strip()],
+                         a.grep or "", a.correction or ""))
+    elif a.action == "resolve":
+        if not a.finding:
+            raise ValueError("usage: autolab defect resolve <DF-id> <F-id> --how ... --why ...")
+        _out(defects.resolve(cfg, a.what or "", a.finding, a.how or "", a.why or "", a.evidence or ""))
+    else:
+        _out(defects.status(cfg))
+
+
 def cmd_report(a):
     from autolab import report
     m = report.write(_cfg(a))
@@ -655,6 +669,19 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("key", nargs="?")
     s.add_argument("--why")
     s.set_defaults(fn=cmd_due)
+
+    s = sub.add_parser("defect", help="known defects of a shared baseline or tool, and the findings they touch: new | resolve | list")
+    s.add_argument("action", choices=["new", "resolve", "list"])
+    s.add_argument("what", nargs="?", help="new: what is wrong; resolve: the DF-id")
+    s.add_argument("finding", nargs="?", help="resolve: the F-id")
+    s.add_argument("--found-by", help="new: where it was found (T-id, R-id, LS-id)")
+    s.add_argument("--affects", help="new: comma-separated F-ids, or E-ids for the findings built on them")
+    s.add_argument("--grep", help="new: regex over each finding's experiment code and claim; later findings that match are touched too")
+    s.add_argument("--correction", help="new: the size of the effect, if measured")
+    s.add_argument("--how", help="resolve: remeasured | rescoped | not_affected")
+    s.add_argument("--why", help="resolve: for rescoped, the sentence that holds now")
+    s.add_argument("--evidence", help="resolve: remeasured: the newer E-id or F-id")
+    s.set_defaults(fn=cmd_defect)
 
     sub.add_parser("tree", help="write state/TREE.md: experiments as a search tree with outcomes").set_defaults(fn=cmd_tree)
 

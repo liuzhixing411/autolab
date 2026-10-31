@@ -138,19 +138,30 @@ def _reviewer(cfg: Config) -> list[dict]:
     return items
 
 
+def _defects(cfg: Config) -> list[dict]:
+    """Findings a known defect touches and nobody has answered for."""
+    from autolab import defects
+    return [{"key": f"defect:{r['id']}", "blocks": True, "skills": [],
+             "title": f"{r['id']} ({r['what'][:90]}) still touches {', '.join(r['open'])}",
+             "do": f"For each finding: `autolab defect resolve {r['id']} <F-id> --how remeasured|rescoped|not_affected "
+                   f"--why ...`. A plan that re-measures declares `fixes = [\"{r['id']}\"]` and passes."}
+            for r in defects.status(cfg) if r["open"]]
+
+
 def compute(cfg: Config, tick: int | None = None) -> list[dict]:
     if not cfg["triggers"].get("enabled", True):
         return []
     if tick is None:
         tick = int((read_json(cfg.layout.state / "tick.json", {}) or {}).get("n", 0))
     waived = (read_json(_file(cfg), {}) or {}).get("waived", {})
-    items = _reviewer(cfg) + _ideation(cfg) + _value(cfg) + _literature(cfg, tick)
+    items = _reviewer(cfg) + _defects(cfg) + _ideation(cfg) + _value(cfg) + _literature(cfg, tick)
     return [i for i in items if i["key"] not in waived]
 
 
-def plan_blockers(cfg: Config) -> list[str]:
+def plan_blockers(cfg: Config, exempt: list[str] | None = None) -> list[str]:
+    """`exempt`: items this plan exists to settle: re-measuring a defect takes a plan of its own."""
     return [f"due item {i['key']} comes first: {i['title']}. {i['do']} (a reasoned exception: `autolab due waive "
-            f"{i['key']} --why ...`)" for i in compute(cfg) if i["blocks"]]
+            f"{i['key']} --why ...`)" for i in compute(cfg) if i["blocks"] and i["key"] not in (exempt or [])]
 
 
 def waive(cfg: Config, key: str, why: str) -> dict:

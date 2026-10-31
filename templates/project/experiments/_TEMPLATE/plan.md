@@ -3,6 +3,7 @@ id = "<<FILL: E001>>"
 context_pack = "<<FILL: CP001 from `autolab preflight`>>"
 hypotheses = ["<<FILL: H-ids from state/HYPOTHESES.md that this experiment tests; each needs state/candidates/<H>.md>>"]
 parent = ""            # the experiment this one follows from (E-id), "" for a new line; drawn by `autolab tree`
+fixes = []             # defects this experiment re-measures (DF-ids); such a plan passes while they are open
 hypothesis = "<<FILL: one falsifiable sentence>>"
 prediction = "<<FILL: expected value/range of the primary metric, with confidence>>"
 decision_rule = "<<FILL: if X then next do A; if Y then B; if invalid then C>>"

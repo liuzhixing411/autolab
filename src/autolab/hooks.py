@@ -31,12 +31,12 @@ APPEND_ONLY = ("state/DECISIONS.md",)
 # records only autolab commands write: the frozen evaluator, outcomes, lessons, spend and call logs
 CLI_OWNED = re.compile(r"^(experiments/[^/]+/(evaluator\.json|outcomes?\.jsonl?|outcome\.json|submission_pending\.json|plan_gate\.json|jobs(?:_usage)?\.jsonl)|"
                        r"claims/[^/]+/(reviews|gate)\.json|state/reviews/.*|"
-                       r"state/novelty/[^/]+/(audit|verdict|reviews|override)\.json|state/due\.json|"
+                       r"state/novelty/[^/]+/(audit|verdict|reviews|override)\.json|state/due\.json|state/defects/[^/]+\.json|"
                        r"literature/search_log\.jsonl|"
                        r"experience/lessons\.jsonl|state/(calls|budget)\.jsonl|state/requests\.json)$")
 _CLI_OWNED_TEXT = ("evaluator.json", "outcome.json", "outcomes.jsonl", "lessons.jsonl", "calls.jsonl", "budget.jsonl",
                    "plan_gate.json", "jobs.jsonl", "jobs_usage.jsonl", "submission_pending.json", "reviews.json", "state/reviews/",
-                   "state/requests.json", "state/novelty/", "state/due.json", "search_log.jsonl")
+                   "state/requests.json", "state/novelty/", "state/due.json", "state/defects/", "search_log.jsonl")
 # the literature API keys are read by `autolab lit` alone
 _KEY_FILE = ".scholar_keys"
 _AUTOLAB_CMD = re.compile(r"^\s*(autolab|python3?\s+-m\s+autolab|\S*python\S*\s+-m\s+autolab)\b")

@@ -89,7 +89,8 @@ PROTECTED_WRITE = ["autolab.toml", "CLAUDE.md", ".claude/settings*.json", ".clau
                    "experiments/*/jobs*.jsonl", "experiments/*/evaluator.json", "experiments/*/outcome*.json*",
                    "experiments/*/submission_pending.json", "**/*.lock", "**/*.lock/**", "state/pi_logs/**",
                    "literature/search_log.jsonl", "state/due.json", "state/novelty/*/audit.json",
-                   "state/novelty/*/verdict.json", "state/novelty/*/reviews.json", "state/novelty/*/override.json"]
+                   "state/novelty/*/verdict.json", "state/novelty/*/reviews.json", "state/novelty/*/override.json",
+                   "state/defects/*.json"]
 # network for sandboxed Bash (literature, packages, code hosting); extend in [agents] sandbox_domains
 SANDBOX_DOMAINS = ["arxiv.org", "export.arxiv.org", "api.crossref.org", "doi.org", "api.openalex.org",
                    "api.semanticscholar.org", "pypi.org", "files.pythonhosted.org", "github.com",
