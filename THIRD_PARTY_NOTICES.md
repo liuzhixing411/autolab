@@ -12,6 +12,10 @@
 | `research-paper-writing` | upstream repository not recorded | MIT (`core/skills/research-paper-writing/LICENSE`) | Copyright (c) 2026 Master-cai |
 | `systematic-debugging`, `verification-before-completion`, `test-driven-development`, `dispatching-parallel-agents` | [obra/superpowers](https://github.com/obra/superpowers) @ bb92a7774141 | MIT | Copyright (c) 2025 Jesse Vincent |
 | `brainstorming-research-ideas`, `ara-rigor-reviewer` | [Orchestra-Research/AI-Research-SKILLs](https://github.com/Orchestra-Research/AI-Research-SKILLs) @ 773a52944ba4 | MIT | Copyright (c) 2025 Claude AI Research Skills Contributors |
+| `novelty-audit/references/novelty-scale.md` (novelty types and degrees, verbatim) | [allenai/asta-theorizer](https://github.com/allenai/asta-theorizer) 0.1.4, `_engine/src/EvaluationQualifiedNovelty.py` | Apache License 2.0 | Allen Institute for AI |
+| `novelty-audit/references/verdict-limits.md` (verbatim) | ARIS `novelty-check`, as above | MIT | Copyright (c) 2026 wanshuiyin |
+
+The rest of `novelty-audit` (procedure, blind controls, checks) is this repository's own work. `src/autolab/scholar.py` and `src/autolab/fulltext.py` follow ideas from [allenai/asta-plugins](https://github.com/allenai/asta-plugins) (citation-driven search, a local full-text index) but copy no code from it.
 
 The MIT licence text that applies to the MIT-licensed components above (with the respective copyright line):
 

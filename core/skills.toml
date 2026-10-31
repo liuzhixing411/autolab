@@ -4,15 +4,21 @@
 #
 # Roles: pi | student | reviewer | human
 # Stages (pi):      init ideation planning claim_review writing rebuttal retrospective
-# Tasks (student):  literature novelty experiment analysis theory figure section compile
-# Stages (review):  ideation claim_review manuscript_review
+# Tasks (student):  literature review novelty plan experiment debug analysis theory rigor writing section figure compile
+# Stages (review):  ideation novelty claim_review manuscript_review
 #
-# `skills` is the menu for a route. `required` (a subset) must be invoked with the Skill tool:
-# `autolab task new` copies it into the task card, and the handoff and plan gates check the
-# turn logs that each one was really invoked. `[always_required]` applies to every task of a role.
+# How a skill gets used. A skill offered as an option stays unused (first-test: 51 of 67 never
+# invoked, the six most used all forced by the task card), so every route says which case applies:
+#   required  must be invoked with the Skill tool: `autolab task new` copies it into the task card,
+#             and the handoff, plan and claim gates check the turn logs.
+#   when      "skill" = "situation": rendered with the condition into the agent file and CLAUDE.md.
+#   skills    the route's full list; a name that is neither required nor under `when` is reachable
+#             by name only (a dependency of another skill, or a tool for the human).
+# Skills used by the rules in src/autolab/due.py count as required too. `autolab skills report`
+# shows what each skill is for and whether it was used; `autolab skills doctor` shows what is broken.
 
 [always]
-pi = ["research-wiki", "dispatching-parallel-agents"]
+pi = ["dispatching-parallel-agents"]
 student = []
 reviewer = []
 
@@ -28,55 +34,75 @@ skills = ["research-lit", "hypothesis-generation"]
 [[route]]
 role = "pi"
 stage = "ideation"
-skills = ["brainstorming-research-ideas", "idea-discovery", "idea-creator", "research-refine-pipeline", "research-refine", "hypothesis-generation"]
+skills = ["brainstorming-research-ideas", "hypothesis-generation", "idea-discovery", "idea-creator", "research-refine-pipeline", "research-refine"]
+required = ["brainstorming-research-ideas", "hypothesis-generation"]
 
 [[route]]
 role = "student"
 task = "literature"
-skills = ["literature-review", "research-lit", "arxiv", "semantic-scholar", "openalex", "paper-lookup", "wiki-enrich"]
+skills = ["research-lit", "literature-review", "arxiv", "semantic-scholar", "openalex", "paper-lookup", "wiki-enrich"]
 required = ["research-lit"]
+when = { literature-review = "the card asks for a systematic review rather than a targeted search" }
 
 [[route]]
 role = "student"
 task = "novelty"
-skills = ["novelty-check", "paper-lookup"]
+skills = ["novelty-audit", "novelty-check", "research-lit", "paper-lookup"]
+required = ["novelty-audit"]
 
 [[route]]
 role = "reviewer"
 stage = "ideation"
 skills = ["research-review"]
 
+[[route]]
+role = "reviewer"
+stage = "novelty"
+skills = ["novelty-audit", "kill-argument"]
+
 # ── P2: planning and execution ──────────────────────────────────────────────
 [[route]]
 role = "pi"
 stage = "planning"
-skills = ["experiment-plan", "ablation-planner", "experimental-design", "statistical-power"]
+skills = ["experiment-plan", "statistical-power", "ablation-planner", "experimental-design"]
 required = ["experiment-plan", "statistical-power"]
+when = { ablation-planner = "the claim depends on which component of a method does the work", experimental-design = "the design has several factors, blocks or confounds to control" }
+
+[[route]]
+role = "student"
+task = "plan"
+skills = ["experiment-plan", "statistical-power", "ablation-planner", "experimental-design"]
+required = ["experiment-plan", "statistical-power"]
+when = { ablation-planner = "the claim depends on which component of a method does the work", experimental-design = "the design has several factors, blocks or confounds to control" }
 
 [[route]]
 role = "student"
 task = "experiment"
-skills = ["experiment-bridge", "run-experiment", "experiment-queue", "monitor-experiment", "get-available-resources", "web-debug-search", "system-profile", "systematic-debugging", "test-driven-development"]
-required = ["run-experiment"]
+skills = ["run-experiment", "test-driven-development", "systematic-debugging", "web-debug-search", "experiment-bridge", "experiment-queue", "monitor-experiment", "get-available-resources", "system-profile"]
+required = ["run-experiment", "test-driven-development"]
+when = { systematic-debugging = "a run fails, a number looks wrong, or the result falls outside the plan's predicted range (handoff `surprise = true`)", web-debug-search = "an error message stays unexplained after one attempt to fix it" }
 
 [[route]]
 role = "student"
 task = "analysis"
-skills = ["analyze-results", "statistical-analysis", "uncertainty-and-units"]
+skills = ["analyze-results", "systematic-debugging", "statistical-analysis", "uncertainty-and-units"]
 required = ["analyze-results"]
+when = { systematic-debugging = "a number looks wrong, or the result falls outside the plan's predicted range (handoff `surprise = true`)", statistical-analysis = "the statistic needs a test or interval the plan does not fix", uncertainty-and-units = "a result combines measured quantities or quotes an error budget" }
 
 [[route]]
 role = "student"
 task = "theory"
 skills = ["formula-derivation", "sympy"]
 required = ["formula-derivation"]
+when = { sympy = "a derivation has algebra worth checking by machine" }
 
 # ── P3: claim gate ──────────────────────────────────────────────────────────
 [[route]]
 role = "pi"
 stage = "claim_review"
-skills = ["ara-rigor-reviewer", "scientific-critical-thinking", "result-to-claim"]
-required = ["result-to-claim"]
+skills = ["result-to-claim", "ara-rigor-reviewer", "scientific-critical-thinking"]
+required = ["result-to-claim", "ara-rigor-reviewer"]
+when = { scientific-critical-thinking = "the evidence is indirect or a confound is plausible" }
 
 [[route]]
 role = "reviewer"
@@ -88,6 +114,14 @@ skills = ["experiment-audit", "result-to-claim", "kill-argument"]
 role = "pi"
 stage = "writing"
 skills = ["paper-writing", "paper-plan", "auto-review-loop", "auto-paper-improvement-loop"]
+when = { paper-writing = "writing a paper for submission", paper-plan = "outlining a paper for submission", auto-review-loop = "the review loop of a submission draft", auto-paper-improvement-loop = "polishing a complete submission draft" }
+
+[[route]]
+role = "student"
+task = "writing"
+skills = ["research-paper-writing", "citation-management", "humanizer"]
+required = ["research-paper-writing"]
+when = { citation-management = "the text needs new reference entries", humanizer = "polishing the final prose" }
 
 [[route]]
 role = "student"
@@ -95,22 +129,26 @@ stage = "writing"
 task = "section"
 skills = ["paper-write", "research-paper-writing", "citation-management"]
 required = ["paper-write"]
+when = { citation-management = "the text needs new reference entries" }
 
 [[route]]
 role = "student"
 task = "figure"
-skills = ["paper-figure", "figure-spec", "mermaid-diagram", "scientific-visualization"]
+skills = ["scientific-visualization", "paper-figure", "figure-spec", "mermaid-diagram"]
 required = ["scientific-visualization"]
+when = { mermaid-diagram = "the figure is a flow chart or a system sketch", paper-figure = "the figure goes into a LaTeX submission" }
 
 [[route]]
 role = "student"
 task = "compile"
 skills = ["paper-compile"]
+required = ["paper-compile"]
 
 [[route]]
 role = "student"
 stage = "polish"
 skills = ["humanizer"]
+when = { humanizer = "polishing the final prose" }
 
 [[route]]
 role = "reviewer"
@@ -126,6 +164,7 @@ skills = ["peer-review"]
 role = "pi"
 stage = "rebuttal"
 skills = ["rebuttal"]
+when = { rebuttal = "referee reports came back" }
 
 # ── Meta ────────────────────────────────────────────────────────────────────
 [[route]]
@@ -144,6 +183,7 @@ role = "student"
 task = "debug"
 skills = ["systematic-debugging", "test-driven-development", "web-debug-search"]
 required = ["systematic-debugging"]
+when = { web-debug-search = "an error message stays unexplained after one attempt to fix it" }
 
 # ── Systematic literature review and rigour review (student tasks) ─────────
 [[route]]
@@ -157,3 +197,4 @@ role = "student"
 task = "rigor"
 skills = ["ara-rigor-reviewer", "scientific-critical-thinking", "result-to-claim"]
 required = ["ara-rigor-reviewer"]
+when = { scientific-critical-thinking = "the evidence is indirect or a confound is plausible" }

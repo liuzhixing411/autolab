@@ -16,11 +16,11 @@ from autolab.util import write_atomic, write_json
 
 STUDENT_ROLES = ("literature", "experiment", "analysis", "figure", "writing")
 ROLE_STAGE_TASKS = {
-    "literature": [("ideation", "literature"), (None, "literature"), (None, "novelty")],
-    "experiment": [(None, "experiment")],
-    "analysis": [(None, "analysis"), (None, "theory")],
+    "literature": [(None, "literature"), (None, "review"), (None, "novelty")],
+    "experiment": [(None, "experiment"), (None, "debug")],
+    "analysis": [(None, "analysis"), (None, "plan"), (None, "theory"), (None, "rigor")],
     "figure": [(None, "figure")],
-    "writing": [("writing", "section"), ("polish", None), (None, "compile")],
+    "writing": [(None, "writing"), ("writing", "section"), ("polish", None), (None, "compile")],
 }
 
 
@@ -87,7 +87,9 @@ PROTECTED_WRITE = ["autolab.toml", "CLAUDE.md", ".claude/settings*.json", ".clau
                    "state/budget.jsonl", "state/calls.jsonl", "experience/lessons.jsonl",
                    "claims/*/reviews.json", "claims/*/gate.json", "experiments/*/plan_gate.json",
                    "experiments/*/jobs*.jsonl", "experiments/*/evaluator.json", "experiments/*/outcome*.json*",
-                   "experiments/*/submission_pending.json", "**/*.lock", "**/*.lock/**", "state/pi_logs/**"]
+                   "experiments/*/submission_pending.json", "**/*.lock", "**/*.lock/**", "state/pi_logs/**",
+                   "literature/search_log.jsonl", "state/due.json", "state/novelty/*/audit.json",
+                   "state/novelty/*/verdict.json", "state/novelty/*/reviews.json", "state/novelty/*/override.json"]
 # network for sandboxed Bash (literature, packages, code hosting); extend in [agents] sandbox_domains
 SANDBOX_DOMAINS = ["arxiv.org", "export.arxiv.org", "api.crossref.org", "doi.org", "api.openalex.org",
                    "api.semanticscholar.org", "pypi.org", "files.pythonhosted.org", "github.com",
@@ -152,8 +154,14 @@ def _write_settings(cfg: Config) -> None:
     weixin_root = (Path.home() / ".cache" / "autolab" / "weixin").as_posix()
     settings["permissions"]["deny"] += [f"{tool}(//{weixin_root.lstrip('/')}/**)"
                                          for tool in ("Read", "Edit", "Write")]
+    # `autolab lit` alone reads the API keys; the guard folder holds the audits' blind controls
+    from autolab.guard import _dir
+    keys_file = Path(cfg["literature"]["keys_file"]).expanduser().as_posix()
+    settings["permissions"]["deny"] += [f"Read(//{keys_file.lstrip('/')})", f"Read(//{_dir(cfg).as_posix().lstrip('/')}/**)"]
+    # skills with a job keep their descriptions in the model's listing (skills.listing)
+    settings["skillOverrides"] = skills.listing(cfg)
+    settings["skillListingBudgetFraction"] = 0.02
     if agents_cfg.get("sandbox"):
-        from autolab.guard import _dir
         # OS-level boundary for Bash and every program it starts (bubblewrap on Linux): the hook and
         # the allow list only filter command text, a script can still write anywhere the user can
         settings["sandbox"] = {
@@ -164,7 +172,7 @@ def _write_settings(cfg: Config) -> None:
             # `autolab` is the sanctioned writer of protected files; scheduler queries need the network
             "excludedCommands": ["autolab *", "squeue *", "sacct *", "seff *", "sinfo *"],
             "filesystem": {"allowWrite": _write_roots(cfg),
-                           "denyRead": [str(_dir(cfg)), weixin_root],
+                           "denyRead": [str(_dir(cfg)), weixin_root, keys_file],
                            "denyWrite": [f"{root}/{p}" for p in PROTECTED_WRITE] + [str(_dir(cfg)), cfg.fw.as_posix(), weixin_root]},
             "network": {"allowedDomains": list(agents_cfg.get("sandbox_domains", SANDBOX_DOMAINS))},
         }
@@ -179,15 +187,14 @@ def write_agents(cfg: Config) -> list[Path]:
         tpl = tpl_dir / f"student-{role}.md"
         if not tpl.is_file():
             continue
-        names: list[str] = []
+        when: dict[str, str] = {}
         for stage, task in ROLE_STAGE_TASKS[role]:
-            for s in skills.resolve(cfg, "student", stage, task):
-                if s not in names:
-                    names.append(s)
+            for s, cond in skills.situations(cfg, "student", stage, task).items():
+                when.setdefault(s, cond)
         model = cfg["models"].get(f"student_{role}", cfg["models"]["student_experiment"])
         text = (tpl.read_text(encoding="utf-8")
                 .replace("{{MODEL}}", model)
-                .replace("{{SKILLS}}", "\n".join(f"- `{s}`" for s in names))
+                .replace("{{SKILLS}}", "\n".join(f"  - `{s}`: {c}" for s, c in when.items()) or "  - (none for this role)")
                 .replace("{{DOMAIN}}", cfg.domain_name)) + _site_notes(cfg)
         p = cfg.layout.agents / f"student-{role}.md"
         write_atomic(p, text)
@@ -197,9 +204,13 @@ def write_agents(cfg: Config) -> list[Path]:
 
 def _write_claude_md(cfg: Config) -> None:
     tpl = (cfg.fw / "templates" / "CLAUDE.md.tmpl").read_text(encoding="utf-8")
-    pi_skills = {st: skills.resolve(cfg, "pi", st) for st in
-                 ("init", "ideation", "planning", "claim_review", "writing", "rebuttal", "retrospective")}
-    table = "\n".join(f"| {st} | {', '.join(f'`{s}`' for s in names)} |" for st, names in pi_skills.items())
+    rows = []
+    for st in ("ideation", "planning", "claim_review", "writing", "rebuttal"):
+        need = skills.required(cfg, "pi", st)
+        when = skills.situations(cfg, "pi", st)
+        rows.append(f"| {st} | {', '.join(f'`{s}`' for s in need) or '—'} | "
+                    f"{'; '.join(f'`{s}`: {c}' for s, c in when.items()) or '—'} |")
+    table = "\n".join(rows)
     # copy the field notes INTO the project: agents should not need paths outside it
     notes = cfg.domain_dir / "field-notes.md"
     if notes.is_file():
@@ -255,7 +266,14 @@ def doctor(cfg: Config) -> list[tuple[str, bool, str]]:
         m = json.loads(mount.read_text(encoding="utf-8"))
         add("mounted domain matches config", m.get("domain") == cfg.domain_name,
             f"mounted={m.get('domain')} config={cfg.domain_name}")
+    broken = [r["skill"] for r in skills.doctor(cfg) if r["use"] == "gate" and r["missing_scripts"]]
+    add("required skills can run", not broken, "see `autolab skills doctor`: " + ", ".join(broken) if broken else "")
     add("ARIS tools present", (cfg.fw / "third_party" / "aris" / "tools" / "research_wiki.py").is_file())
+    from autolab import fulltext, scholar
+    add("full-text search (SQLite FTS5)", fulltext.available())
+    have = scholar.keys(cfg)
+    add("literature API keys", all(k in have for k in scholar.KEY_NAMES.values()),
+        f"{cfg['literature']['keys_file']}: found {sorted(k for k in scholar.KEY_NAMES.values() if k in have)}")
     try:
         from autolab.knowledge import _pypdf
         add("PDF text extraction (pypdf)", True, _pypdf(cfg).__version__)

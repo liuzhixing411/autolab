@@ -38,9 +38,10 @@ def lit_add(cfg: Config, title: str, doi: str = "", year: int | None = None, tie
             keywords: list[str] | None = None) -> dict:
     if tier not in TIERS or role not in ROLES or access not in ACCESS:
         raise ValueError(f"tier∈{TIERS} role∈{ROLES} access∈{ACCESS}")
-    for r in lit_records(cfg):
-        if doi and r.get("doi", "").lower() == doi.lower():
-            return r
+    from autolab.scholar import Index
+    known = Index(cfg).find(title, doi)                 # one paper can carry two DOIs, or none yet
+    if known:
+        return next(r for r in lit_records(cfg) if r["id"] == known)
     rec = {"id": next_id(cfg.layout.ids, "literature", width=4), "title": title, "doi": doi,
            "year": year, "tier": tier, "role": role, "access": access,
            "keywords": keywords or [], "added": now_iso()}
@@ -146,7 +147,7 @@ def note_template(cfg: Config, lid: str) -> Path:
         write_atomic(p, (
             "+++\n"
             f'id = "{lid}"\ndoi = "{rec.get("doi", "")}"\n'
-            'read_level = "full"        # abstract | skim | full\n'
+            'read_level = ""            # abstract | skim | full: what you actually read\n'
             'version_read = ""          # journal | preprint | tech-report | thesis | other (if not the indexed version, say so)\n'
             'source_url = ""\n'
             'read_by = ""               # agent or person\n'
@@ -254,21 +255,29 @@ def expand_synonyms(cfg: Config, query: set[str]) -> set[str]:
     return out
 
 
-def _select(cfg: Config, query: set[str]) -> list[dict]:
-    """Knowledge items relevant to `query`, highest overlap first, with must-read flags."""
+def _select(cfg: Config, query: set[str], full_text: bool = False) -> list[dict]:
+    """Knowledge items relevant to `query`, highest overlap first, with must-read flags.
+    `full_text`: papers also match on their text and notes, at least two query terms (one term
+    alone is mostly noise); the pack shows the best passage with its page."""
     limit = cfg["gates"]["context_pack_max_items"]
     must_tier = cfg["gates"]["require_reading_receipts_tier"]
     query = expand_synonyms(cfg, query)
+    found = {}
+    if full_text and query:
+        from autolab import fulltext
+        found = {k: v for k, v in fulltext.search(cfg, sorted(query)).items() if v["terms"] >= 2}
     scored = []
     for it in _sources(cfg):
         s = overlap(query, it["text"] + " " + it["title"])
+        hit = found.get(it["id"]) if it["kind"] == "literature" else None
+        s += hit["terms"] if hit else 0
         always = it["kind"] == "upload" and it.get("rec", {}).get("use_as") == "constraint"
         if s > 0 or always:
-            scored.append((s + (100 if always else 0), it))
+            scored.append((s + (100 if always else 0), it, hit))
     scored.sort(key=lambda x: -x[0])
 
     chosen, per_kind = [], {}
-    for s, it in scored:
+    for s, it, hit in scored:
         k = it["kind"]
         if k not in MUST_ALWAYS and per_kind.get(k, 0) >= limit:
             continue
@@ -276,9 +285,11 @@ def _select(cfg: Config, query: set[str]) -> list[dict]:
         must = k in MUST_ALWAYS or (k == "upload" and it["rec"].get("use_as") == "constraint")
         if k == "literature" and TIERS.index(it["rec"].get("tier", "C")) <= TIERS.index(must_tier):
             must = True
-        chosen.append({"id": it["id"], "kind": k, "title": it["title"], "score": s,
-                       "must_read": must,
-                       "path": str(it["path"].relative_to(cfg.layout.root)) if it.get("path") else None})
+        row = {"id": it["id"], "kind": k, "title": it["title"], "score": s, "must_read": must,
+               "path": str(it["path"].relative_to(cfg.layout.root)) if it.get("path") else None}
+        if hit:
+            row["passage"] = f"p.{hit['page']}: {hit['snippet']}" if hit["page"] else f"notes: {hit['snippet']}"
+        chosen.append(row)
     return chosen
 
 
@@ -290,7 +301,7 @@ def build_context_pack(cfg: Config, topic: str, keywords: list[str],
     # matching works on word tokens
     query = set(k.lower() for k in keywords) | {w.lower() for w in re.findall(r"\w{3,}", topic)}
     query |= {w.lower() for k in keywords for w in re.findall(r"\w{3,}", k)}
-    chosen = _select(cfg, query)
+    chosen = _select(cfg, query, full_text=True)
     have = {c["id"] for c in chosen}
     must_tier = cfg["gates"]["require_reading_receipts_tier"]
     for it in _sources(cfg):
@@ -305,7 +316,7 @@ def build_context_pack(cfg: Config, topic: str, keywords: list[str],
     if missing:
         raise KeyError(f"--include IDs not found in the knowledge base: {missing}")
     cp = next_id(cfg.layout.ids, "context_pack")
-    pack = {"id": cp, "topic": topic, "keywords": sorted(query), "created": now_iso(),
+    pack = {"id": cp, "topic": topic, "keywords": sorted(query), "created": now_iso(), "full_text": True,
             "sources_hash": _sources_hash(cfg), "items": chosen, "include": sorted(include or [])}
     write_json(cfg.layout.context_packs / f"{cp}.json", pack)
 
@@ -320,6 +331,7 @@ def build_context_pack(cfg: Config, topic: str, keywords: list[str],
             for c in group:
                 flag = "MUST " if c["must_read"] else ""
                 where = f" — `{c['path']}`" if c["path"] else ""
+                where += f" — {c['passage']}" if c.get("passage") else ""
                 lines.append(f"- {flag}**{c['id']}** {c['title']}{where}")
             lines.append("")
     if not chosen:
@@ -354,7 +366,8 @@ def check_plan(cfg: Config, eid: str) -> dict:
     else:
         # Re-run the pack's own search: only NEW relevant items make it stale, and the plan can
         # answer just those. Edits to unrelated records (a tier fix, a moved PDF) do not count.
-        current = {c["id"]: c for c in _select(cfg, set(pack.get("keywords", [])))}
+        # (with the same search as the pack: packs from before full text are not made stale by it)
+        current = {c["id"]: c for c in _select(cfg, set(pack.get("keywords", [])), pack.get("full_text", False))}
         items = []
         for it in pack["items"]:
             now = current.get(it["id"])
@@ -398,6 +411,10 @@ def check_plan(cfg: Config, eid: str) -> dict:
 
     _check_precision_and_map(cfg, plan, meta, body, problems, warnings)
     _check_candidates(cfg, eid, meta, body, problems, warnings)
+    from autolab import due, novelty
+    novelty.plan_check(cfg, eid, meta, problems, warnings)
+    if not (exp / "jobs.jsonl").is_file():    # a locked plan keeps running; only new plans wait
+        problems += due.plan_blockers(cfg)
     result ={"eid": eid, "ok": not problems, "problems": problems, "warnings": warnings,
               "checked": now_iso(), "plan_hash": sha256_tree(plan)}
     write_json(exp / "plan_gate.json", result)

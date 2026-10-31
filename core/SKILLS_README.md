@@ -15,6 +15,10 @@ The PI, the students and the reviewer all load skills from this one folder. It c
 | obra/superpowers (MIT) | 4 | systematic-debugging, verification-before-completion, test-driven-development (students), dispatching-parallel-agents (PI) |
 | Orchestra-Research/AI-Research-SKILLs (MIT) | 2 | brainstorming-research-ideas (PI ideation after a failed direction or before a pivot), ara-rigor-reviewer (six-dimension rigour review of claims and drafts) |
 
+`novelty-audit` is the one skill written here: its procedure is local, its scale comes from Asta's Theorizer and its verdict limits from ARIS (see `THIRD_PARTY_NOTICES.md`).
+
+Being in this folder does not make a skill run. `docs/SKILL_USE.md` explains how a skill comes to be used; `autolab skills report` shows it for a project.
+
 The skills are kept as upstream wrote them (a few ARIS files contain Chinese examples or a Chinese patent-format reference). Field-neutral additions go into `core/overlays/` and domain additions into `domains/<domain>/overlays/`; overlays are appended when a project mounts its skills, so the upstream files stay unchanged.
 
 ## How a project mounts them

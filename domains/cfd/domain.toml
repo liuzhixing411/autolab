@@ -10,11 +10,13 @@ title = "Computational fluid dynamics (incl. multiphase)"
 role = "student"
 task = "experiment"
 skills = ["uncertainty-and-units"]
+when = { uncertainty-and-units = "a result quotes a grid, time-step or measurement error budget" }
 
 [[route]]
 role = "pi"
 stage = "planning"
 skills = ["uncertainty-and-units"]
+when = { uncertainty-and-units = "the plan needs a grid, time-step or measurement error budget" }
 
 # Claims cannot enter findings/ without these files listed in claim.md [validation].
 [validation]

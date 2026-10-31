@@ -7,9 +7,9 @@ autolab runs a small "research lab" of AI agents that works on a scientific ques
 - **Reviewer** (a different model family, default OpenAI Codex CLI): independently checks whether evidence supports each claim, at a tier chosen by difficulty. Only claims that pass the PI *and* the reviewer become findings.
 - **You** steer through one folder (`00_human/`): goals, hard rules, what counts as valuable, uploads, ad-hoc instructions, pause/resume. The agents ask you for downloads and decisions in `00_human/ACTION_NEEDED.md`.
 
-Research methods come from mature open-source skill libraries (ARIS, K-Dense, obra/superpowers, Orchestra and others, 68 skills; see `THIRD_PARTY_NOTICES.md`). This repository adds the glue: project layout, gates, a SLURM backend, cost and compute caps, and a permission hook that keeps the agents inside their zones.
+Research methods come from mature open-source skill libraries (ARIS, K-Dense, obra/superpowers, Orchestra and others, 68 skills; see `THIRD_PARTY_NOTICES.md`). This repository adds the glue: project layout, gates, a SLURM backend, cost and compute caps, literature tools, and a permission hook that keeps the agents inside their zones.
 
-> Status: v0.2, used for real multi-day runs on Purdue RCAC clusters (Negishi). Expect rough edges; read `CHANGELOG.md`.
+> Status: v0.7, used for real multi-day runs on Purdue RCAC clusters (Negishi). Expect rough edges; read `CHANGELOG.md`.
 
 ---
 
@@ -22,6 +22,7 @@ Research methods come from mature open-source skill libraries (ARIS, K-Dense, ob
 | **Linux host** with bash, git, tmux, Python ≥ 3.11 | Yes | Runs the loop and the `autolab` tool | A cluster login node, a workstation, or WSL on Windows. The framework itself needs only the Python standard library |
 | **SLURM cluster** | Optional | Experiments as batch jobs | Profiles for Purdue RCAC Negishi and Gautschi are included; add your own in `sites/` (§7.1). Without a scheduler use `--site local` |
 | Internet access | At install | Fetching vendored tools and `pypdf` | — |
+| Literature API keys | Recommended | `autolab lit`: Semantic Scholar rate limit, OpenAlex daily allowance | `~/.scholar_keys.env` with `OPENALEX_API_KEY=`, `SEMANTIC_SCHOLAR_API_KEY=`, `CONTACT_EMAIL=` (mode 600). Works slower without them. Agents cannot read this file |
 
 Claude Code alone is enough to run the lab; GPT/Codex alone is not, because the PI and the students run inside Claude Code.
 
@@ -76,7 +77,8 @@ Then edit `autolab.toml` in the project:
 | `[slurm]` | `account` | Your SLURM account (e.g. from `slist` or `sacctmgr show assoc user=$USER`) |
 | `[slurm]` | `max_cpus`, `max_mem_gb`, `max_hours`, `max_gpus`, `total_core_hours` | Per-job and total compute caps (0 = no cap for `max_cpus` and `total_core_hours`) |
 | `[slurm]` | `partition`, `qos`, `conda_env` | Defaults for job scripts |
-| `[gates]` | `min_grade_to_accept`, `human_debounce_minutes`, … | How strict the claim gate is; how long an edit must be still before it counts |
+| `[gates]` | `min_grade_to_accept`, `human_debounce_minutes`, `require_novelty`, `novelty_audit_core_hours`, … | How strict the claim gate is; how long an edit must be still before it counts; when a novelty audit is required |
+| `[triggers]` | `enabled`, `refine_streak`, `value_every`, `lit_watch_every` | When the lab must stop for an ideation round, a value review or a literature watch |
 | `[agents]` | `allow_bash`, `env` | Extra commands the agents may run without asking (e.g. compilers for an external code you approved) and extra environment variables |
 
 After editing `autolab.toml`, run `autolab skills mount` (re-renders the agents and permissions), then:
@@ -130,6 +132,7 @@ How the loop behaves:
 - Before each turn `autolab wake check` looks for anything new (human edits, handoff cards, escalations, job state changes). If nothing changed, the turn is skipped at no cost; a turn is forced after `PI_MAX_IDLE_MIN` minutes (default 45).
 - The PI starts students in the background and reacts to each report as it arrives (continue, redirect another student, or escalate); the turn ends when every student has reported or been stopped. A turn is killed after `PI_TURN_TIMEOUT` seconds (default 3600).
 - The loop stops when `[budget] total_usd` is reached and asks you in `ACTION_NEEDED.md`.
+- When the provider refuses a turn because a usage window is full, the runner reads the reset time from the log, tells you once and waits; jobs keep running and `STOP` still works.
 - tmux sessions live on one login node; `state/pi_status.json` (shared file system) says whether a turn is running, on which host.
 
 Stop the loop with `tmux kill-session -t autolab-loop` (on the same login node), or pause the agents without stopping it with `touch 00_human/STOP`.
@@ -150,6 +153,9 @@ Stop the loop with `tmux kill-session -t autolab-loop` (on the same login node),
 | Let the PI decide while you are away | Nothing to do: a blocking request you do not answer is carried out after `[autonomy] decision_timeout_hours` (default 4) with the PI's recommendation, except the keys in `[autonomy] always_ask`. For a longer hand-over create `00_human/DELEGATED` (TOML): `until = "2026-10-17T08:00:00-04:00"` and `to = "pi"` |
 | See cost and compute | `autolab budget status`, `autolab slurm status`, `autolab slurm usage` |
 | See the search and how well it goes | `state/TREE.md` (`autolab tree`), `autolab candidate list`, `autolab report metrics` |
+| See what would be new | `state/CONTRIBUTIONS.md` (ledger of novelty audits and findings), `autolab novelty list` |
+| See what is overdue | `autolab due list` (also first in every digest) |
+| See which skills really run | `autolab skills report`; what breaks them: `autolab skills doctor` |
 | Inspect a turn | `scripts/pi_log_summary.py <log>`: tool calls, blocked actions, errors, final report, cost |
 | Watch from another machine | `scripts/watch_turn.sh <project> <turn-number>` prints DONE / RUNNING / WAITING / STALLED / LOOP_DOWN |
 
@@ -168,7 +174,8 @@ Jobs: an experiment's `plan.md` declares `[resources]` (`cpus`, `mem_gb`, `hours
 ### 7.2 Another model provider
 
 - **Claude via API key / Bedrock / Vertex**: Claude Code reads its usual environment variables (`ANTHROPIC_API_KEY`; `CLAUDE_CODE_USE_BEDROCK=1` with AWS credentials; `CLAUDE_CODE_USE_VERTEX=1` with `CLOUD_ML_REGION` and `ANTHROPIC_VERTEX_PROJECT_ID`). Export them in the shell that starts the loop. Keep the `[models]` aliases or use model names your provider accepts.
-- **Another reviewer**: set `[reviewer] backend = "command"` and `command = [...]`, a command line in which `{model}`, `{effort}`, `{workdir}` and `{out_file}` are substituted; the prompt arrives on stdin and the answer is read from `{out_file}` (or stdout). Set the tier models accordingly. Using Claude as its own reviewer works technically but loses the independence the design relies on.
+- **Another reviewer**: set `[reviewer] backend = "command"` and `command = [...]`, a command line in which `{model}`, `{effort}`, `{workdir}` and `{out_file}` are substituted; the prompt arrives on stdin and the answer is read from `{out_file}` (or stdout). Set the tier models accordingly. Using Claude as its own reviewer works technically but loses the independence the design relies on: say so with `independence = "same_vendor"`. Such a review cannot give grade A, and a cross-vendor review stays listed in `autolab due list`.
+- **Reviewer out of quota**: reviews pause for `[reviewer] limit_pause_h` hours and you are told once; claims and audits wait, nothing passes without its review. `autolab review limit clear` resumes them early.
 - **Cost reporting**: the budget uses the cost Claude Code reports for each turn. With a subscription this is an estimate, not an invoice; reviewer calls are reserved before execution; unknown API cost is estimated rather than treated as free. See [the accounting and integrity upgrade](docs/SECURITY_UPGRADE.md).
 
 ### 7.3 Another field
@@ -194,8 +201,11 @@ human (00_human/) ──► PI turn: autolab tick → digest → decide → task
                                                                                    └─► claims/_rejected/
 ```
 
-- **Knowledge gate**: before any new direction, `autolab preflight` builds a context pack from failed ideas, rejected claims, findings, literature (with reading receipts for key papers) and your uploads. `plan.md` must answer every item, and `autolab gate plan` must pass before anything is submitted. Plans are locked once a job runs.
-- **Skills are invoked, not just listed**: `autolab task new` writes a task card with the model for its difficulty (haiku / sonnet / opus) and the *required* skills of its route (`required` in `core/skills.toml`). Students must invoke them with the Skill tool; the handoff gate and the plan gate check the turn logs and send work back when a required skill was never invoked. Each tick digest lists the skills used.
+- **Knowledge gate**: before any new direction, `autolab preflight` builds a context pack from failed ideas, rejected claims, findings, literature (searched in full text, with the matching passage and reading receipts for key papers) and your uploads. `plan.md` must answer every item, and `autolab gate plan` must pass before anything is submitted. Plans are locked once a job runs.
+- **Novelty audits**: a new line of work or a plan above `gates.novelty_audit_core_hours` needs one. The contribution is broken into statements; a student searches (`autolab lit snowball|search|snippets`), reads, and judges each statement against each paper on seven novelty types and four degrees; the reviewer tries to refute the result; known results mixed in blind must be recognised or the audit is void. ABANDON must name the paper that already has it; nothing else stops a plan. No audit proves nobody did it: the record says what was searched. `state/CONTRIBUTIONS.md` is the ledger the report is built from.
+- **Literature tools**: `autolab lit` holds the API keys and queues the calls. `snowball` follows references and citing papers from the closest work, `search` merges Semantic Scholar and OpenAlex, `snippets` reads passages from paper bodies, `fetch` gets legal open copies, `watch` reports new papers citing tier A records. Each leaves a row in `literature/search_log.jsonl`.
+- **Skills are invoked, not just listed**: `autolab task new` writes a task card with the model for its difficulty (haiku / sonnet / opus) and the *required* skills of its route (`required` in `core/skills.toml`); an unknown task is refused. Students must invoke them with the Skill tool; the handoff, plan and claim gates check the turn logs and the products. Other skills are named with their situation (`when`), or stay callable by name only. See `docs/SKILL_USE.md`.
+- **Due rules**: `autolab due` computes what must happen now from the records: an ideation round after three stalled results, a value review after three findings, a literature watch. Items come first in the digest, close by themselves when their product exists, and stop new plans until done or waived with a reason.
 - **Research map and memory**: `state/HYPOTHESES.md` (the hypotheses, their status and evidence; every plan names the H-ids it tests), `state/DECISIONS.md` (append-only, written by `autolab decide`), and a retrospective every `gates.retro_every` ticks whose rules (`autolab lesson add`) appear in later context packs.
 - **Candidates and discrimination**: every hypothesis a plan tests has a card in `state/candidates/<H>.md` (`autolab candidate new|list|check|set`): closest prior work, mechanism difference, evidence for and against, key uncertainty, the smallest discriminating experiment, cost, and continue / pause / kill conditions. The plan gate requires the cards and a `## Discrimination` section: which explanations the experiment separates and which decision each outcome leads to. Rankings between candidates are advice only.
 - **Outcomes in three layers**: `autolab outcome <E>` records engineering (valid / invalid), hypothesis (supports / refutes / inconclusive) and value (continue / refine / pivot / stop). An invalid run is rerun, never counted against the direction; stopping or redirecting a sub-direction is the PI's call and only notifies you; a change of the research goal (`--changes-goal`) waits for you. New plans wait until every finished experiment has an outcome. The analysis script is fingerprinted at the first submission; later changes must be explained in `plan_amendments.md`. Plans name their `parent` experiment and `autolab tree` draws the search (`state/TREE.md`).
@@ -205,7 +215,7 @@ human (00_human/) ──► PI turn: autolab tick → digest → decide → task
 - **Precision before compute**: the plan gate requires a `## Precision` section (unit of replication, planned n, expected CI or detectable effect, source of the variance estimate), made with the `statistical-power` skill.
 - **Jobs**: many similar runs go out as one job array (`array = "0-25%8"`); after each job the digest shows its real CPU efficiency and peak memory so the next request is sized from data.
 - **Handoff cards**: students report in a fixed format (what was done, numbers with their source files, deviations, anomalies); numbers in experiment cards are checked against the result files.
-- **Claim gate**: the combined grade is the worse of the PI's and the reviewer's; a large disagreement goes to you (`00_human/verdicts/<C>.toml`, tied to the claim version). Claims must name their closest prior work and the mechanism difference. Review rounds are tracked in a ledger that escalates oscillation or stalls.
+- **Claim gate**: the combined grade is the worse of the PI's and the reviewer's; a large disagreement goes to you (`00_human/verdicts/<C>.toml`, tied to the claim version). Claims must name their closest prior work (papers in the index) and the mechanism difference; a central claim also needs a `kill_argument` review of its current version and a stated `novelty` (an audit, or `none-claimed` for a measurement). Review rounds are tracked in a ledger that escalates oscillation or stalls.
 - **Writing stage**: starts only after you approve readiness; the PI and the reviewer then alternate revise/review rounds until the reviewer has no remaining objections.
 - **Literature**: papers get IDs and tiers; open-access PDFs are fetched and converted to text; paywalled ones are requested from you through ACTION_NEEDED.
 
@@ -236,7 +246,7 @@ autolab/
 ├── templates/     new-project template (human zone, autolab.toml, CLAUDE.md protocol for the PI)
 ├── src/autolab/   the `autolab` tool (Python standard library only)
 ├── scripts/       env.sh, run_pi.sh (loop), watch_turn.sh, pi_log_summary.py, fetch_vendor.sh, cluster/reviewer checks
-├── docs/          design notes (EVALUATION_DESIGN.md: comparative evaluation, not yet run)
+├── docs/          design notes (SKILL_USE.md: how skills come to run; EVALUATION_DESIGN.md: comparative evaluation, not yet run)
 └── tests/         interface tests: python -m unittest discover -s tests
 ```
 

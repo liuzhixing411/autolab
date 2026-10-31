@@ -13,15 +13,57 @@ import re
 import shutil
 import subprocess
 import time
+from datetime import datetime
 from pathlib import Path
 
 from autolab.config import Config
-from autolab.util import next_id, now_iso, read_frontmatter, write_atomic, write_json, write_new
+from autolab.util import next_id, now_iso, read_frontmatter, read_json, write_atomic, write_json, write_new
 
 ORDER = ("light", "regular", "deep")
 VERDICT_TASKS = {"claim_support", "experiment_audit", "novelty", "kill_argument",
                  "paper_claim_audit", "final_cold_read", "value_grade", "review_loop_round",
                  "section_review", "citation_audit", "idea_review"}
+QUOTA = re.compile(r"usage limit|weekly limit|rate limit|hit your|quota|too many requests", re.I)
+
+
+class ReviewerLimit(RuntimeError):
+    """The reviewer's provider refused the call for lack of quota. Retrying cannot help."""
+
+
+def _limit_file(cfg: Config) -> Path:
+    return cfg.layout.state / "reviewer_limit.json"
+
+
+def limit_status(cfg: Config, now: float | None = None) -> dict | None:
+    """The refusal being waited out, or None when reviews may run."""
+    rec = read_json(_limit_file(cfg))
+    if not rec:
+        return None
+    if float(rec.get("until", 0)) <= (now or time.time()):
+        _limit_file(cfg).unlink(missing_ok=True)
+        return None
+    return rec
+
+
+def clear_limit(cfg: Config) -> None:
+    _limit_file(cfg).unlink(missing_ok=True)
+
+
+def record_limit(cfg: Config, detail: str, now: float | None = None) -> dict:
+    """Pause reviews and tell the human once. Nothing is reviewed in the meantime: a claim waits for
+    its review rather than passing without one."""
+    from autolab import human
+    now = now or time.time()
+    until = now + float(cfg["reviewer"]["limit_pause_h"]) * 3600
+    known = limit_status(cfg, now)
+    rec = {"until": until, "at": now_iso(), "detail": detail.strip()[-300:]}
+    write_json(_limit_file(cfg), rec)
+    if not known:
+        when = datetime.fromtimestamp(until).strftime("%m-%d %H:%M")
+        human.notify(cfg, f"审查员额度用完，审查暂停到 {when} 后自动重试，需要审查的声明和审计会一直等着。背景：{rec['detail'][:160]}。"
+                          "要提前恢复，额度回来后运行 `autolab review limit clear`；要换审查员，在 autolab.toml 的 [reviewer] 里改 "
+                          "backend 和 command，并写 independence = \"same_vendor\"。")
+    return rec
 
 
 def hard_topic_hit(cfg: Config, text: str) -> list[str]:
@@ -63,10 +105,31 @@ def route(cfg: Config, task: str, central: bool = False, disagreement: bool = Fa
 
 
 TASK_STAGE = {"claim_support": "claim_review", "experiment_audit": "claim_review", "kill_argument": "claim_review",
-              "value_grade": "claim_review", "novelty": "claim_review", "idea_review": "ideation",
+              "value_grade": "claim_review", "novelty": "novelty", "idea_review": "ideation",
               "section_review": "manuscript_review", "review_loop_round": "manuscript_review",
               "citation_audit": "manuscript_review", "paper_claim_audit": "manuscript_review",
               "final_cold_read": "manuscript_review"}
+# The question each task asks, whoever starts it; a caller's instructions come on top. These four
+# were defined from the start and ran 0 times in first-test, partly because nobody knew what to ask.
+TASK_BRIEF = {
+    "novelty": "Try to refute this audit. Name any published work you know that already contains a statement, even "
+               "if it is not in the audit's list, and say how to find it; the lab will check it. Judge whether the "
+               "search could have found what matters, whether each degree fits the quoted passage, and whether the "
+               "delta is one a referee could verify. Apply the verdict limits in the novelty-audit skill: proximity "
+               "alone is no reason to abandon. Verdict yes = the audit holds, partial = gaps to fix, no = it does not hold.",
+    "value_grade": "Read the goal, the value standard, the findings and the contribution ledger. Answer plainly: what is "
+                   "the one new thing so far, in a sentence? Who would change what they do because of it? Which venue "
+                   "would take it, and what would its referee object to first? What is the single most valuable next "
+                   "step, and what should stop? Grade the value against the standard. Verdict yes = this adds up to a "
+                   "contribution, partial = it could with a named step, no = it does not.",
+    "kill_argument": "Make the strongest honest case that this claim is wrong, trivial, already known or an artefact. "
+                     "Then say whether that case survives the evidence. Verdict yes = the claim survives, partial = it "
+                     "survives only if narrowed (say how), no = the argument stands.",
+    "idea_review": "Judge these candidates: which are real alternatives, and which are one idea reworded? Then propose "
+                   "two mechanistically different candidates the list does not contain, each with the cheapest test that "
+                   "could kill it. Verdict yes = the list covers the plausible mechanisms, partial = it has gaps, no = it "
+                   "misses the main ones.",
+}
 
 
 def review_pack(cfg, task: str) -> str:
@@ -149,9 +212,15 @@ def run(cfg: Config, task: str, files: list[Path], instructions: str = "",
     missing = [str(p) for p in files if not p.is_file()]
     if missing:
         raise FileNotFoundError(f"review files not found: {missing}")
+    paused = limit_status(cfg) if cfg["reviewer"]["backend"] != "mock" else None
+    if paused:
+        raise ReviewerLimit("reviews are paused, the reviewer is out of quota until "
+                            f"{datetime.fromtimestamp(paused['until']).strftime('%m-%d %H:%M')}: work on something that "
+                            "needs no review; nothing passes without one")
     text = " ".join(p.read_text(encoding="utf-8", errors="ignore")[:20000] for p in files)
     r = route(cfg, task, central, disagreement, text)
     verdict_allowed = bool(cfg["reviewer"]["tiers"][r["tier"]].get("verdict_allowed"))
+    instructions = "\n".join(x for x in (TASK_BRIEF.get(task, ""), instructions) if x)
     prompt = build_prompt(task, files, instructions, root, verdict_allowed, review_pack(cfg, task))
     rid = next_id(cfg.layout.ids, "review", width=4)
     out_dir = out_dir or cfg.layout.reviews
@@ -185,7 +254,12 @@ def run(cfg: Config, task: str, files: list[Path], instructions: str = "",
                 "usage": {r["model"]: {"total_tokens": int(m.group(1).replace(",", ""))}} if m else {},
                 "extra": {"task": task, "backend": backend}}
         if proc.returncode != 0:
-            budget.record_call(cfg, "review", "error", error=proc.stderr[-500:], **call)
+            said = (proc.stderr + proc.stdout)[-2000:]
+            quota = bool(QUOTA.search(said))
+            budget.record_call(cfg, "review", "rate_limited" if quota else "error", error=said[-500:], **call)
+            if quota:
+                record_limit(cfg, said)
+                raise ReviewerLimit(f"reviewer out of quota: {said[-300:]}")
             raise RuntimeError(f"reviewer failed ({proc.returncode}): {proc.stderr[-2000:]}")
         budget.record_call(cfg, "review", "ok", usd=float(cfg["reviewer"].get("usd_per_call", 0) or 0) or None, **call)
         raw = out_file.read_text(encoding="utf-8") if out_file.is_file() else proc.stdout
@@ -195,8 +269,8 @@ def run(cfg: Config, task: str, files: list[Path], instructions: str = "",
     verdict = parse_verdict(raw)
     if not verdict_allowed:                       # a non-verdict tier can only report issues
         verdict["verdict"], verdict["grade"] = "n/a", None
-    record = {"id": rid, "task": task, "route": r, "files": [str(f) for f in files],
-              "backend": backend, "created": now_iso(), **verdict}
+    record = {"id": rid, "task": task, "route": r, "files": [str(f) for f in files], "backend": backend,
+              "independence": cfg["reviewer"]["independence"], "created": now_iso(), **verdict}
     if subject:
         record["subject"] = subject
     usd = float(cfg["reviewer"].get("usd_per_call", 0) or 0)

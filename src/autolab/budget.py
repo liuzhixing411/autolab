@@ -155,9 +155,11 @@ def turn_info(log: Path) -> dict:
         if ev.get("type") == "result":
             sub = str(ev.get("subtype", ""))
             info["status"] = "ok" if sub == "success" and not ev.get("is_error") else "error"
+            if str(ev.get("api_error_status")) == "429":      # a full usage window, not a failed turn
+                info["status"] = "rate_limited"
             info["subtype"] = sub
             info["duration_s"] = round(float(ev.get("duration_ms") or 0) / 1000, 1)
             info["num_turns"] = ev.get("num_turns")
-            if info["status"] == "error":
+            if info["status"] != "ok":
                 info["error"] = str(ev.get("result") or sub)[:500]
     return info

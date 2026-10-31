@@ -67,6 +67,18 @@ def metrics(cfg: Config) -> dict:
         by_kind.setdefault(c["kind"], Counter())[c["status"]] += 1
     credible = len(current)
 
+    # where ideas came from and whether anyone checked they are new (first-test could not say)
+    from autolab import novelty, skills
+    cards = [research.candidate(cfg, c["id"]) or {} for c in research.list_candidates(cfg)]
+    origins = Counter(str(c.get("origin") or "unrecorded") for c in cards)
+    by_hyp = {c.get("id"): str(c.get("origin") or "unrecorded") for c in cards}
+    found_by = Counter()
+    for f in current:
+        hyps = [h for e in f.get("experiments", []) for h in (latest.get(e) or {}).get("hypotheses", [])]
+        found_by[next((by_hyp[h] for h in hyps if h in by_hyp), "unrecorded")] += 1
+    audits = novelty.list_audits(cfg)
+    gate_rows = [r for r in skills.report(cfg) if r["use"] == "gate"]
+
     m = {
         "claims": {"open": len(claims), "accepted_findings": credible, "rejected": len(rejected),
                    "claim_reviews": len(claim_reviews), "sent_back": len(sent_back),
@@ -92,6 +104,16 @@ def metrics(cfg: Config) -> dict:
                  "usd_per_valid_test": _ratio(spent, len(valid_tests)),
                  "core_hours_per_valid_test": _ratio(ch, len(valid_tests))},
         "calls": {k: dict(v) for k, v in by_kind.items()},
+        "ideas": {"candidates_by_origin": dict(origins), "findings_by_origin": dict(found_by),
+                  # of the findings whose origin is on record; None when none is (cards from before 0.7)
+                  "lab_originated_share": _ratio(sum(v for k, v in found_by.items() if k not in ("human", "unrecorded")),
+                                                 sum(v for k, v in found_by.items() if k != "unrecorded")),
+                  "ideation_rounds": len(list((L.state / "ideation").glob("*.md")))},
+        "novelty": {"audits": len(audits), "open": sum(a["verdict"] == "open" for a in audits),
+                    "verdicts": dict(Counter(a["verdict"] for a in audits if a["verdict"] != "open")),
+                    "literature_searches": len(read_jsonl(L.literature / "search_log.jsonl"))},
+        "skills": {"mounted": len(skills.skill_sources(cfg)), "invoked": len(skills.invoked_since(cfg)),
+                   "forced_never_invoked": [r["skill"] for r in gate_rows if not r["calls"]] if skills.have_logs(cfg) else []},
     }
     return m
 

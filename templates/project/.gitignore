@@ -11,3 +11,6 @@ __pycache__/
 # full texts stay local: publisher PDFs and text extracted from them are not ours to share
 literature/pdf/
 literature/text/
+# rebuildable caches of `autolab lit`
+literature/cache/
+literature/fulltext.sqlite

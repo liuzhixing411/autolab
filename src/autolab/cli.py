@@ -63,6 +63,19 @@ def cmd_skills(a):
         return 1 if probs else 0
     elif a.action == "list":
         _out(sorted(skills.skill_sources(cfg)))
+    elif a.action == "doctor":
+        rows = [r for r in skills.doctor(cfg) if a.all or r["codex_step"] or r["other_mcp"] or r["missing_scripts"] or r["ml_terms"]]
+        for r in rows:
+            found = [k for k, v in (("codex step (covered by overlay)", r["codex_step"]), (f"other tools {r['other_mcp']}", r["other_mcp"]),
+                                    (f"missing scripts {r['missing_scripts']}", r["missing_scripts"]),
+                                    (f"{r['ml_terms']} ML-only terms", r["ml_terms"])) if v]
+            print(f"{r['skill']} [{r['use']}]: {'; '.join(found) or 'ok'}")
+    elif a.action == "report":
+        rows = skills.report(cfg)
+        for r in rows:
+            print(f"{r['skill']:34s} {r['use']:10s} {r['calls']}")
+        idle = [r["skill"] for r in rows if r["use"] == "gate" and not r["calls"]]
+        print(f"\n{sum(1 for r in rows if r['calls'])} of {len(rows)} skills invoked" + (f"; forced but never invoked: {', '.join(idle)}" if idle else ""))
 
 
 def cmd_human(a):
@@ -111,10 +124,29 @@ def cmd_human(a):
 
 
 def cmd_lit(a):
-    from autolab import knowledge
+    from autolab import knowledge, scholar
     cfg = _cfg(a)
-    if a.action == "add":
-        kw = [k.strip() for k in (a.keywords or "").split(",") if k.strip()]
+    kw = [k.strip() for k in (a.keywords or "").split(",") if k.strip()]
+    if a.action in ("search", "snippets", "snowball", "watch", "fetch"):
+        if a.action == "search":
+            res = scholar.search(cfg, a.query, a.limit or 20, a.since, a.audit or "", a.fresh)
+        elif a.action == "snippets":
+            res = scholar.snippets(cfg, a.query, a.limit or 20, a.audit or "", a.fresh)
+        elif a.action == "snowball":
+            seeds = [s.strip() for s in (a.seeds or "").split(",") if s.strip()]
+            if not seeds:
+                raise ValueError("--seeds: comma-separated L-ids or DOIs of the closest papers")
+            res = scholar.snowball(cfg, seeds, kw, a.audit or "", a.fresh)
+        elif a.action == "watch":
+            from autolab.util import read_json
+            res = scholar.watch(cfg, int((read_json(cfg.layout.state / "tick.json", {}) or {}).get("n", 0)), a.fresh)
+        elif a.id in (None, "all"):
+            res = scholar.fetch_missing(cfg, a.limit or 0, a.fresh)
+        else:
+            _out(scholar.fetch(cfg, a.id))
+            return
+        print(scholar.render(res, limit=a.limit or 40))
+    elif a.action == "add":
         _out(knowledge.lit_add(cfg, a.title, a.doi or "", a.year, a.tier, a.role, a.access, kw))
     elif a.action == "update":
         kw = [k.strip() for k in a.keywords.split(",")] if a.keywords else None
@@ -165,8 +197,30 @@ def cmd_review(a):
     if a.action == "route":
         _out(reviewer.route(cfg, a.task, a.central, a.disagreement, a.text or ""))
         return
+    if a.action == "limit":
+        if a.task == "clear":
+            reviewer.clear_limit(cfg)
+        _out(reviewer.limit_status(cfg) or {"paused": False})
+        return
     files = [Path(f) for f in a.files]
+    if a.task == "value_grade" and not files:
+        from autolab import novelty
+        novelty.write_ledger(cfg)
+        files = [Path(p) for p in ("00_human/GOAL.md", "00_human/TASTE.md", "findings/INDEX.md", "state/CONTRIBUTIONS.md")
+                 if (cfg.layout.root / p).is_file()]
     subject = None
+    if a.audit:
+        from autolab import novelty
+        from autolab.util import FileLock
+        d = cfg.layout.novelty / a.audit
+        novelty.load(cfg, a.audit)
+        files = [d / n for n in ("audit.json", "judgments.jsonl", "report.md") if (d / n).is_file()] + files
+        rec = reviewer.run(cfg, a.task, files, a.instructions or "", a.central, a.disagreement,
+                           subject={"audit": a.audit, "fingerprint": novelty.fingerprint(cfg, a.audit)})
+        with FileLock(d / "reviews.json"):
+            write_json(d / "reviews.json", (read_json(d / "reviews.json", []) or []) + [rec["id"]])
+        _out({k: rec[k] for k in ("id", "task", "route", "verdict", "grade") if k in rec})
+        return
     if a.claim:
         from autolab import gates
         from autolab.util import FileLock
@@ -220,6 +274,20 @@ def cmd_slurm(a):
         _out({"core_hours_used": slurm.core_hours_used(cfg), "finished_jobs": c["used"],
               "reserved_for_unfinished": c["reserved"], "committed": c["committed"],
               "cap": cfg["slurm"].get("total_core_hours") or None})
+
+
+def cmd_limit(a):
+    from datetime import datetime
+    from autolab import execution
+    cfg = _cfg(a)
+    if a.action == "record":
+        _out(execution.record_limit(cfg, Path(a.log)))
+        return 0
+    rec = execution.limit_status(cfg)
+    if rec:
+        print(datetime.fromtimestamp(rec["until"]).isoformat(timespec="minutes"))
+        return 3
+    return 0
 
 
 def cmd_budget(a):
@@ -301,6 +369,35 @@ def cmd_tree(a):
     print(research.tree(_cfg(a)), end="")
 
 
+def cmd_novelty(a):
+    from autolab import novelty
+    cfg = _cfg(a)
+    if a.action == "new":
+        audit = novelty.new(cfg, a.id, a.statement or [], a.type or "",
+                            [s.strip() for s in (a.decoy_from or "").split(",") if s.strip()], a.no_decoy or "")
+        print(f"{audit['id']}: {len(audit['statements'])} statements to judge (state/novelty/{audit['id']}/audit.json). "
+              f"Give the literature student this id, not your own statement list: some are controls.")
+    elif a.action == "check":
+        res = novelty.check(cfg, a.id)
+        _out(res)
+        return 0 if res["ok"] else 1
+    elif a.action == "close":
+        _out(novelty.close(cfg, a.id, a.verdict, a.closest or "", a.delta or "", a.why or ""))
+    elif a.action == "override":
+        _out(novelty.override(cfg, a.id, a.why or ""))
+    else:
+        _out(novelty.list_audits(cfg))
+
+
+def cmd_due(a):
+    from autolab import due
+    cfg = _cfg(a)
+    if a.action == "waive":
+        _out(due.waive(cfg, a.key, a.why or ""))
+    else:
+        _out(due.compute(cfg))
+
+
 def cmd_report(a):
     from autolab import report
     m = report.write(_cfg(a))
@@ -378,11 +475,13 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("action", choices=["login", "listen", "apply"])
     s.set_defaults(fn=cmd_weixin)
 
-    s = sub.add_parser("skills")
-    s.add_argument("action", choices=["resolve", "mount", "check", "list"])
+    s = sub.add_parser("skills", help="resolve | mount | check | list | doctor (what keeps a skill from working) | "
+                                      "report (what each skill is for and how often it ran)")
+    s.add_argument("action", choices=["resolve", "mount", "check", "list", "doctor", "report"])
     s.add_argument("--role", default="pi")
     s.add_argument("--stage")
     s.add_argument("--task")
+    s.add_argument("--all", action="store_true", help="doctor: list healthy skills too")
     s.set_defaults(fn=cmd_skills)
 
     s = sub.add_parser("human")
@@ -403,8 +502,15 @@ def build_parser() -> argparse.ArgumentParser:
                                                          "(default [autonomy] decision_timeout_hours)")
     s.set_defaults(fn=cmd_human)
 
-    s = sub.add_parser("lit", help="literature index: add | update | text (PDF→text) | note (reading receipt) | list | intake (pdf_drop)")
-    s.add_argument("action", choices=["add", "update", "text", "note", "list", "intake"])
+    s = sub.add_parser("lit", help="literature: search | snippets (paper bodies) | snowball (citation links) | fetch (open PDFs) | "
+                                   "watch (new citing papers) | add | update | text (PDF→text) | note (reading receipt) | list | intake (pdf_drop)")
+    s.add_argument("action", choices=["search", "snippets", "snowball", "fetch", "watch", "add", "update", "text", "note", "list", "intake"])
+    s.add_argument("query", nargs="?", default="", help="search, snippets: the query")
+    s.add_argument("--seeds", help="snowball: comma-separated L-ids or DOIs")
+    s.add_argument("--limit", type=int, help="search, snippets, snowball: rows shown; fetch: papers tried")
+    s.add_argument("--since", type=int, help="search: first publication year")
+    s.add_argument("--audit", help="the novelty audit this search belongs to")
+    s.add_argument("--fresh", action="store_true", help="ignore the cache")
     s.add_argument("--id")
     s.add_argument("--title")
     s.add_argument("--doi")
@@ -433,10 +539,11 @@ def build_parser() -> argparse.ArgumentParser:
     s.set_defaults(fn=cmd_gate)
 
     s = sub.add_parser("review")
-    s.add_argument("action", choices=["route", "run"])
-    s.add_argument("task")
+    s.add_argument("action", choices=["route", "run", "limit"])
+    s.add_argument("task", nargs="?", help="review task; `limit clear` resumes reviews paused for lack of quota")
     s.add_argument("files", nargs="*")
     s.add_argument("--claim")
+    s.add_argument("--audit", help="review a novelty audit (N-id)")
     s.add_argument("--loop")
     s.add_argument("--central", action="store_true")
     s.add_argument("--disagreement", action="store_true")
@@ -464,12 +571,17 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("log", nargs="?")
     s.set_defaults(fn=cmd_budget)
 
+    s = sub.add_parser("limit", help="runner support: usage-window wait (check: exit 3 while waiting; record <log>)")
+    s.add_argument("action", choices=["check", "record"])
+    s.add_argument("log", nargs="?")
+    s.set_defaults(fn=cmd_limit)
+
     s = sub.add_parser("task", help="new task card with the required skills of its route")
     s.add_argument("action", choices=["new"])
     s.add_argument("title")
     s.add_argument("--student", required=True, choices=["literature", "experiment", "analysis", "figure", "writing"])
-    s.add_argument("--task", help="route task (literature, novelty, experiment, analysis, theory, figure, "
-                                  "section, compile, debug, review, rigor); default = the student role")
+    s.add_argument("--task", help="route task (literature, review, novelty, plan, experiment, debug, analysis, theory, "
+                                  "rigor, writing, section, figure, compile); default = the student role")
     s.add_argument("--stage", help="route stage, e.g. writing or polish")
     s.add_argument("--difficulty", default="standard", choices=["mechanical", "standard", "hard"])
     s.add_argument("--model", choices=["haiku", "sonnet", "opus"], help="default: from difficulty")
@@ -524,6 +636,25 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--changes-goal", action="store_true", help="pivot/stop that changes the research goal or question "
                    "(waits for the human); stopping or redirecting a sub-direction is the PI's call")
     s.set_defaults(fn=cmd_outcome)
+
+    s = sub.add_parser("novelty", help="novelty audits: new | check | close | override | list (state/novelty/<N>/)")
+    s.add_argument("action", choices=["new", "check", "close", "override", "list"])
+    s.add_argument("id", nargs="?", help="new: H-id, C-id or `project`; others: the N-id")
+    s.add_argument("--statement", action="append", help="new: a contribution statement; repeat for several")
+    s.add_argument("--type", help="new: the novelty type claimed (see the novelty-audit skill)")
+    s.add_argument("--decoy-from", help="new: comma-separated L-ids to draw control statements from")
+    s.add_argument("--no-decoy", help="new: reason for an audit without controls")
+    s.add_argument("--verdict", help="close: PROCEED | CAUTION | ABANDON")
+    s.add_argument("--closest", help="close: the closest paper (L-id)")
+    s.add_argument("--delta", help="close: the difference from it, in one sentence a referee could verify")
+    s.add_argument("--why", help="close: what makes the delta thin (CAUTION); override: the reason")
+    s.set_defaults(fn=cmd_novelty)
+
+    s = sub.add_parser("due", help="what the lab must do now: list | waive <key> --why ...")
+    s.add_argument("action", choices=["list", "waive"])
+    s.add_argument("key", nargs="?")
+    s.add_argument("--why")
+    s.set_defaults(fn=cmd_due)
 
     sub.add_parser("tree", help="write state/TREE.md: experiments as a search tree with outcomes").set_defaults(fn=cmd_tree)
 

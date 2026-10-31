@@ -120,6 +120,20 @@ def precheck(cfg: Config, cid: str) -> dict:
     if not (_re.search(r"\bL\d{4}\b", closest) or ("none found" in closest.lower() and "search" in closest.lower())):
         problems.append("section '## Closest prior work' is missing or empty: list the closest works (L-ids) with "
                         "the mechanism difference and where the evidence shows it, or 'none found' with the search log")
+    from autolab import novelty, skills
+    from autolab.knowledge import lit_records
+    known = {r["id"] for r in lit_records(cfg)}
+    unknown = sorted(set(_re.findall(r"\bL\d{4}\b", closest)) - known)
+    if unknown:
+        problems.append(f"'## Closest prior work' names papers that are not in the literature index: {unknown}")
+    problems += novelty.claim_problems(cfg, meta)
+    need = skills.required(cfg, "pi", "claim_review")
+    if need and skills.have_logs(cfg):
+        since = (cdir / "claim.md").stat().st_mtime - 24 * 3600
+        seen = skills.invoked_by(cfg, since, {cid}, include_pi=True)
+        missing = [s for s in need if s not in seen]
+        if missing:
+            problems.append(f"claim-review skills {missing} were not invoked (Skill tool) around this claim")
     if not str(meta.get("statement", "")).strip():
         problems.append("statement is empty")
     if meta.get("pi_grade") not in GRADES:
@@ -188,7 +202,18 @@ def _claim_gate(cfg: Config, cid: str) -> dict:
     meta = pre["meta"]
 
     fp = fingerprint(cfg, cid)
-    support = [r for r in _reviews(cfg, cdir) if r["task"] == "claim_support"]
+    records = _reviews(cfg, cdir)
+    support = [r for r in records if r["task"] == "claim_support"]
+    if meta.get("central") and cfg["gates"].get("require_kill_argument", True):
+        # the strongest case against a central claim, on this version of it (defined since 0.1, never run in first-test)
+        kill = [r for r in records if r["task"] == "kill_argument" and
+                (r.get("subject") or {}).get("fingerprint") == fp["fingerprint"]]
+        if not kill or kill[-1].get("verdict") == "no":
+            res = {"claim": cid, "decision": "needs_review",
+                   "reasons": ["central claim: run `autolab review run kill_argument --claim " + cid + " --central` on "
+                               "this version" if not kill else "the kill argument stands (verdict no): answer it or narrow the claim"]}
+            write_json(cdir / "gate.json", {**res, "checked": now_iso()})
+            return res
     if not support:
         res = {"claim": cid, "decision": "needs_review",
                "reasons": ["no claim_support review yet (`autolab review run claim_support --claim ...`)"]}
@@ -226,6 +251,8 @@ def _claim_gate(cfg: Config, cid: str) -> dict:
                           "(review format before 0.6.2): run the review again" if legacy else ""))
     else:
         combined = worse(meta["pi_grade"], last["grade"])
+        if last.get("independence") == "same_vendor":
+            combined = worse(combined, "B")
         split = abs(GRADES.index(meta["pi_grade"]) - GRADES.index(last["grade"]))
         if split >= 2:
             decision = "human_decision"

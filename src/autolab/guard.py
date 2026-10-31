@@ -34,7 +34,10 @@ def protected(cfg: Config) -> dict[str, str]:
     for name in ("evaluator.json", "outcome.json", "outcomes.jsonl"):   # written by autolab commands only
         files += list(cfg.layout.experiments.glob(f"*/{name}"))
     files += [cfg.layout.experience / "lessons.jsonl", cfg.layout.state / "calls.jsonl",
-              cfg.layout.state / "budget.jsonl", cfg.layout.state / "requests.json"]
+              cfg.layout.state / "budget.jsonl", cfg.layout.state / "requests.json",
+              cfg.layout.state / "due.json", cfg.layout.literature / "search_log.jsonl"]
+    for name in ("audit.json", "verdict.json", "reviews.json", "override.json"):
+        files += list(cfg.layout.novelty.glob(f"*/{name}"))
     files += list(cfg.layout.reviews.rglob("*"))
     for pattern in ("*/plan_gate.json", "*/jobs.jsonl", "*/jobs_usage.jsonl", "*/submission_pending.json"):
         files += list(cfg.layout.experiments.glob(pattern))

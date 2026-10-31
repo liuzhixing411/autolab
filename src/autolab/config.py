@@ -30,6 +30,10 @@ DEFAULTS: dict[str, Any] = {
     },
     "reviewer": {
         "backend": "codex",
+        # same_vendor: the reviewer comes from the PI's own vendor, so shared blind spots are possible.
+        # Such a review cannot give grade A, and a cross-vendor one stays due.
+        "independence": "cross_vendor",
+        "limit_pause_h": 6,            # hours before retrying a reviewer that ran out of quota
         "billing": "api",              # subscription must be explicitly selected
         "unknown_call_usd": 1.0,        # provisional estimate, not a provider-enforced cap
         # {model} {effort} {workdir} {out_file} are substituted; the prompt is fed on stdin.
@@ -67,7 +71,20 @@ DEFAULTS: dict[str, Any] = {
         "require_outcomes": True,          # finished experiments must get `autolab outcome` before new plans
         "context_pack_max_items": 12,
         "download_request_tiers": ["A"],      # only these tiers trigger automatic download requests
+        # novelty audits (novelty.py): a new line of work, or a plan above this many core-hours, needs one
+        "require_novelty": True,
+        "novelty_audit_core_hours": 50,
+        "novelty_min_papers": 5,           # papers judged per statement
+        "novelty_min_full_text": 2,        # of which read in full
+        "novelty_decoys": 2,               # known results mixed in blind; a miss voids the audit
+        "novelty_max_age_days": 90,
     },
+    # situations that require an action (due.py): shown first in the digest; `blocks` items stop new plans
+    "triggers": {"enabled": True, "refine_streak": 3, "value_every": 3, "lit_watch_every": 20},
+    # literature APIs (scholar.py): keys are read from this file by `autolab lit`, never by agents
+    "literature": {"keys_file": "~/.scholar_keys.env", "queue_dir": "~/.cache/autolab/scholar",
+                   "s2_min_interval_s": 1.5, "tries": 4, "backoff_s": 3.0, "cache_days": 14,
+                   "openalex_usd_floor": 0.02},
     # total_usd = hard cap for the whole run (0 = no cap); enforced by scripts/run_pi.sh
     # how long the lab waits for the human (autonomy.py): blocking requests carry the PI's
     # recommendation and are carried out after the timeout, except rules listed in always_ask

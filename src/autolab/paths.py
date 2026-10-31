@@ -122,6 +122,10 @@ class Layout:
         return self.state / "reviews"
 
     @property
+    def novelty(self) -> Path:
+        return self.state / "novelty"
+
+    @property
     def human_snapshot(self) -> Path:
         return self.state / "human_snapshot.json"
 
@@ -157,7 +161,7 @@ class Layout:
             self.lit_notes, self.literature / "pdf", self.wiki, self.experiments,
             self.claims, self.rejected, self.findings, self.experience,
             self.digests, self.tasks, self.escalations, self.context_packs,
-            self.ledger, self.reviews, self.skills_mount, self.agents,
+            self.ledger, self.reviews, self.novelty, self.skills_mount, self.agents,
         ]
 
 

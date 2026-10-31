@@ -38,7 +38,11 @@ def make_project(domain="cfd", site="local", backend="mock") -> tuple[Path, Conf
     for name, text in FILLED.items():
         (root / "00_human" / name).write_text(text, encoding="utf-8")
     cfgf = root / "autolab.toml"
-    cfgf.write_text(cfgf.read_text(encoding="utf-8").replace('backend = "codex"', f'backend = "{backend}"'),
+    # the novelty gate and the due rules have tests of their own (tests/test_research_gates.py)
+    cfgf.write_text(cfgf.read_text(encoding="utf-8").replace('backend = "codex"', f'backend = "{backend}"')
+                    .replace("require_novelty = true", "require_novelty = false")
+                    .replace("[triggers]\n# Situations that require an action (`autolab due`): shown first in the digest; some stop new plans\nenabled = true",
+                             "[triggers]\nenabled = false"),
                     encoding="utf-8")
     (root / "00_human" / "READY").touch()
     return root, Config(root)
@@ -92,14 +96,14 @@ If the result supports H1 (slope 0.4-0.6) we extend to three nozzles; if it refu
     if not hyp.is_file() or "<<FILL" in hyp.read_text(encoding="utf-8"):
         write(hyp, "| H1 | - | Breakup frequency scales with Weber number | open | - | - | E001 |\n")
     if research.candidate(cfg, "H1") is None:
-        research.new_candidate(cfg, "H1", "Breakup frequency scales with Weber number",
+        research.new_candidate(cfg, "H1", "Breakup frequency scales with Weber number", origin="pi",
                                closest_work="L0001 regime map", mechanism_difference="jet shear instead of turbulence",
                                key_uncertainty="slope at high Weber", discriminating_experiment="E001 slope fit",
                                continue_if="slope 0.4-0.6", kill_if="slope outside 0.2-0.8")
     for i in pack["items"]:
         if i["kind"] == "literature" and i["must_read"]:
             note = knowledge.note_template(cfg, i["id"])
-            note.write_text(note.read_text(encoding="utf-8").replace(
+            note.write_text(note.read_text(encoding="utf-8").replace('read_level = ""', 'read_level = "full"').replace(
                 "## Key points\n", "## Key points\nBreakup regime map vs Weber number.\n"), encoding="utf-8")
     return knowledge.check_plan(cfg, eid), pack
 
@@ -117,7 +121,7 @@ class InitAndSkills(unittest.TestCase):
         self.assertIn("Computational fluid dynamics", (self.root / "CLAUDE.md").read_text(encoding="utf-8"))
         agent = (L.agents / "student-experiment.md").read_text(encoding="utf-8")
         self.assertIn("model: sonnet", agent)
-        self.assertIn("`run-experiment`", agent)
+        self.assertIn("`systematic-debugging`: a run fails", agent)
         self.assertIn("`uncertainty-and-units`", agent)          # added by the CFD pack
         self.assertNotIn("{{", agent)
 
@@ -150,7 +154,7 @@ class InitAndSkills(unittest.TestCase):
 
     def test_resolve_merges_core_and_domain(self):
         names = skills.resolve(self.cfg, "pi", "planning")
-        self.assertEqual(names[0], "research-wiki")              # always
+        self.assertEqual(names[0], "dispatching-parallel-agents")  # always
         self.assertIn("experiment-plan", names)
         self.assertIn("uncertainty-and-units", names)            # domain route
 
@@ -435,6 +439,7 @@ class ClaimGate(unittest.TestCase):
         write(e / "results" / "metrics.json", '{"slope": 0.52}')
         write(e / "results" / "mesh_convergence.json", '{"gci_fine": 0.012}')
         research.record_outcome(self.cfg, "E001", "valid", "supports", "continue", "Validated slope and mesh study")
+        knowledge.lit_add(self.cfg, "Snapshot relabelling of bubbles", tier="C")      # L0001, cited by the claims
 
     def claim(self, cid, grade="B", review=None, validation=True):
         val = '[validation]\nmesh_convergence = "experiments/E001/results/mesh_convergence.json"\n' if validation else ""
@@ -462,6 +467,13 @@ pi_grade = "{grade}"
         self.assertTrue((f / "finding.json").is_file())
         self.assertIn("We^0.52", (self.cfg.layout.findings / "INDEX.md").read_text(encoding="utf-8"))
         self.assertEqual(read_json(f / "finding.json")["reviewer_model"], "gpt-6-astra")
+
+    def test_a_review_from_the_labs_own_vendor_cannot_give_grade_a(self):
+        toml = self.root / "autolab.toml"
+        toml.write_text(toml.read_text(encoding="utf-8").replace('independence = "cross_vendor"', 'independence = "same_vendor"'),
+                        encoding="utf-8")
+        res = self.claim("C001", "A", {"verdict": "yes", "grade": "A", "issues": []})
+        self.assertEqual((res["decision"], res["grade"]), ("accepted", "B"), res)
 
     def test_unverified_out_of_scope_items_do_not_block(self):
         base = {"verdict": "yes", "grade": "B", "issues": []}
@@ -1639,7 +1651,7 @@ class ResearchSteering(unittest.TestCase):
 
     def test_candidate_cli(self):
         rc, out = run_cli("--project", str(self.root), "candidate", "new", "H7", "--statement", "Landmarks certify connectivity",
-                          "--closest-work", "L0052 dynamic connectivity", "--mechanism-difference", "geometric landmarks",
+                          "--origin", "pi", "--closest-work", "L0052 dynamic connectivity", "--mechanism-difference", "geometric landmarks",
                           "--key-uncertainty", "landmark density", "--discriminating-experiment", "replay E004 D",
                           "--continue-if", "skip rate > 50%", "--kill-if", "skip rate < 10%")
         self.assertEqual(rc, 0)

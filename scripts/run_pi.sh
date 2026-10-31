@@ -37,6 +37,12 @@ while true; do
   # Import authenticated human replies only between turns, before integrity snapshots.
   autolab weixin apply || { echo "Weixin reply import failed; stopping"; exit 5; }
   if [ -e 00_human/STOP ]; then echo "$(date -Is) STOP present"; [ $ONCE = 1 ] && exit 0; sleep "$INTERVAL"; continue; fi
+  # a full usage window refuses every turn until it resets: wait instead of retrying (exit 3 = waiting)
+  LIMIT="$(autolab limit check 2>&1)"; LRC=$?
+  if [ "$LRC" = 3 ]; then
+    printf '{"state":"usage_limit","host":"%s","pid":%d,"until":"%s"}\n' "$(hostname)" $$ "$LIMIT" > state/pi_status.json
+    echo "$(date -Is) usage limit: waiting until $LIMIT"; [ $ONCE = 1 ] && exit 6; sleep "$INTERVAL"; continue
+  fi
   # stop before a turn the remaining budget could not cover (cap minus a turn reserve)
   if ! autolab budget check >/dev/null; then
     autolab human request --kind approval --blocking --dedupe "API budget nearly used up" "API budget nearly used up ($(autolab budget check | tr -d '\n ')). Raise [budget] total_usd in autolab.toml to continue." >/dev/null
@@ -63,6 +69,7 @@ while true; do
   RC=$?                                  # 124 = turn hit the time limit
   [ "$RC" = 124 ] && echo "$(date -Is) turn exceeded ${PI_TURN_TIMEOUT:-3600}s and was stopped" >> state/pi_logs/runner-loop.out
   autolab budget record "$LOG" >/dev/null || { echo "Cost recording failed; stopping"; touch 00_human/STOP; exit 5; }
+  autolab limit record "$LOG" >/dev/null 2>&1 || true
   # protected files changed by a tool call this turn? (restores config, else STOP + ask the human)
   autolab guard check "$LOG" >> state/pi_logs/runner-loop.out 2>&1 || { echo "Integrity check failed; stopping"; touch 00_human/STOP; exit 5; }
   "$AUTOLAB_PYTHON" -m autolab.execution finish --log "$LOG" --rc "$RC" --seconds "$(( $(date +%s)-T0 ))" || { echo "Execution record failed; stopping"; exit 5; }

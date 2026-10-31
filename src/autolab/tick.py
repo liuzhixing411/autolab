@@ -130,6 +130,15 @@ def run(cfg: Config) -> dict:
         L += ["## Skills invoked since the last tick: " + ", ".join(f"{k} x{v}" for k, v in sorted(used_skills.items())), ""]
     elif prev_t and _skills.have_logs(cfg):
         L += ["## Skills invoked since the last tick: none. Task cards list required skills; students must invoke them.", ""]
+    from autolab import due, novelty
+    try:
+        novelty.write_ledger(cfg)
+        must = due.digest(cfg, counter)
+    except (OSError, ValueError, KeyError) as e:       # a damaged record must not stop the tick
+        must = [f"## Must do now\n- the due rules could not run ({e}); fix the record or tell the human", ""]
+    if must:                                 # first thing after the header: a section at the bottom gets skipped
+        at = next((i for i, line in enumerate(L) if line.startswith("## ")), len(L))
+        L[at:at] = must
     if retro_last is not None:
         L += [f"## Retrospective due (last at tick {retro_last or 'never'})",
               f"Dispatch one student (analysis, sonnet) to write `experience/RETRO-{counter}.md` from state/DECISIONS.md, "
@@ -138,7 +147,8 @@ def run(cfg: Config) -> dict:
               "`autolab lesson add \"<rule>\" --origin <E-id|RETRO-n> --when data=... --when resolution=... "
               "--evidence <file> --confidence low|medium|high --recheck \"<when it may stop holding>\" --keywords k1,k2`; "
               "record new supporting or contradicting experiments with `autolab lesson support|counter <LS-id>`. "
-              "Also read `autolab report metrics` (state/METRICS.md). Framework problems go to the human in ACTION_NEEDED.", ""]
+              "Also read `autolab report metrics` (state/METRICS.md) and `autolab skills report` (a `gate` skill with no "
+              "calls means its trigger is broken). Framework problems go to the human in ACTION_NEEDED.", ""]
     from autolab import research
     try:
         no_outcome = research.missing_outcomes(cfg)

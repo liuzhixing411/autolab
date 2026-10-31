@@ -7,11 +7,13 @@ title = "Numerical methods and HPC algorithms"
 role = "student"
 task = "experiment"
 skills = ["statistical-analysis"]
+when = { statistical-analysis = "timings need a confidence interval or a paired comparison" }
 
 [[route]]
 role = "pi"
 stage = "planning"
 skills = ["statistical-analysis"]
+when = { statistical-analysis = "the plan's timing comparison needs a stated estimator" }
 
 # Claims cannot enter findings/ without these files listed in claim.md [validation].
 [validation]

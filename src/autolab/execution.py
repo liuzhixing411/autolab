@@ -7,7 +7,7 @@ import os
 from pathlib import Path
 from typing import Protocol
 from autolab.config import Config
-from autolab.util import now_iso, write_json
+from autolab.util import now_iso, read_json, write_json
 
 @dataclass(frozen=True)
 class TurnRequest:
@@ -41,6 +41,59 @@ def backend(cfg):
     if name not in BACKENDS:
         raise ValueError(f"unsupported execution backend: {name}; available: claude-code")
     return name, BACKENDS[name]
+
+LIMIT_WINDOWS = {"five_hour": "5 小时", "seven_day": "7 天"}
+LIMIT_FALLBACK_S = 3600            # the provider refused the turn but gave no reset time
+
+def _limit_file(cfg) -> Path:
+    return cfg.layout.state / "usage_limit.json"
+
+def usage_limit(log: Path) -> dict | None:
+    """The usage window that refused this turn, from its stream-json log, or None.
+    First-test 2026-10-21: the weekly window was full, every turn ended at once with rc=1 and the
+    loop kept trying every 45 minutes until a person noticed; finished jobs waited for days."""
+    found = None
+    for line in log.read_text(encoding="utf-8", errors="ignore").splitlines():
+        if '"rate_limit_event"' not in line:
+            continue
+        try:
+            info = json.loads(line).get("rate_limit_info") or {}
+        except json.JSONDecodeError:
+            continue
+        if info.get("status") == "rejected":
+            found = {"window": str(info.get("rateLimitType") or "unknown"), "resets_at": info.get("resetsAt")}
+    return found
+
+def record_limit(cfg, log: Path, now: float | None = None) -> dict | None:
+    """After a turn: remember a refused window so the runner waits it out, and tell the human once."""
+    import time
+    from datetime import datetime
+    hit = usage_limit(log)
+    if hit is None:
+        return None
+    now = now or time.time()
+    resets = hit["resets_at"]
+    until = float(resets) if isinstance(resets, (int, float)) and resets > now else now + LIMIT_FALLBACK_S
+    old = read_json(_limit_file(cfg), {}) or {}
+    rec = {"window": hit["window"], "until": until, "at": now_iso(), "log": log.name}
+    write_json(_limit_file(cfg), rec)
+    if old.get("until") != until:
+        from autolab import human
+        when = datetime.fromtimestamp(until).strftime("%m-%d %H:%M")
+        human.notify(cfg, f"Claude {LIMIT_WINDOWS.get(hit['window'], hit['window'])}用量已满，实验室暂停到 {when}，之后自动继续。"
+                          "背景：PI 和学生都停下，已提交的 Slurm 作业继续运行，恢复后再处理结果。")
+    return rec
+
+def limit_status(cfg, now: float | None = None) -> dict | None:
+    """The window the runner is waiting for, or None when a turn may start."""
+    import time
+    rec = read_json(_limit_file(cfg))
+    if not rec:
+        return None
+    if float(rec.get("until", 0)) <= (now or time.time()):
+        _limit_file(cfg).unlink(missing_ok=True)
+        return None
+    return rec
 
 def main():
     p = argparse.ArgumentParser(description=__doc__)
@@ -77,7 +130,6 @@ def main():
     else:
         if a.rc is None or a.seconds is None:
             p.error("--rc and --seconds are required")
-        from autolab.util import read_json
         path = log.with_suffix(".execution.json")
         result = read_json(path, {})
         result.update(schema=1, backend=name, state="finished", finished=now_iso(),

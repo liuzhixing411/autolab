@@ -1,5 +1,51 @@
 # Changelog
 
+## 0.7.0 — 2026-10-31
+
+From an audit of first-test (171 ticks, about 490 USD, 10 findings). Its rigour held; three things had no
+mechanism behind them: whether the work is new, whether the lab proposes its own directions, and whether
+the literature was covered. The audit, the retrospective literature test and the skill analysis are in
+the upgrade plan; `docs/SKILL_USE.md` explains the skill changes.
+
+- **Skills that get used.** 51 of 67 skills were never invoked; the six most used were all written into the
+  task card. Causes found: 28 cards named a task with no route (`writing`, `plan`, `draft`, ...) and silently
+  got only the base skill; a `section` task without `--stage` missed its route; 29 skills call a Codex tool
+  that does not exist here; nothing triggered ideation; Claude Code drops descriptions of the least-used
+  skills first once the listing passes 1 % of the context window, so an unused skill stays unused. Now:
+  unknown tasks are refused; a task finds its route without the stage; routes say `required` or `when`
+  (situation), and students no longer get a menu; spare skills are listed by name only (`skillOverrides`);
+  the Codex steps are translated at mount; `surprise = true` requires `systematic-debugging` on experiment
+  and analysis cards; `autolab skills report|doctor` show what each skill is for and what breaks it.
+- **Due rules** (`due.py`, `autolab due list|waive`): situations computed from the records, first in the
+  digest, closing by themselves when their product exists. Three stalled results in a row require an ideation
+  round; three findings require a value review; both stop new plans until done or waived with a reason.
+- **Novelty audits** (`novelty.py`, skill `novelty-audit`, `autolab novelty`): statements judged paper by paper
+  on Theorizer's scale after an open search, with blind control statements taken from the lab's own reading
+  notes; a missed control voids the audit. A new line of work or a plan above `gates.novelty_audit_core_hours`
+  (50) needs one. Only ABANDON stops a plan, and it must name a paper. A cross-model review of the same version
+  must have no open critical issue; an open major issue closes only as CAUTION, named in `--why`.
+  `state/CONTRIBUTIONS.md` is the ledger.
+- **Literature tools** (`scholar.py`): `autolab lit search|snippets|snowball|fetch|watch` over Semantic Scholar
+  and OpenAlex, with queueing, backoff, cache and a search log. Agents never see the keys. `research-lit`
+  and `novelty-audit` tasks must leave a search and a snowball in the log.
+- **Full-text context packs** (`fulltext.py`): SQLite FTS5 over `literature/text` and the notes; a pack shows
+  the passage and page. Packs from before 0.7 keep their old search, so they do not go stale.
+- **Idle reviews wired in**: `value_grade`, `novelty`, `kill_argument` and `idea_review` have triggers and a
+  standing brief. A claim with `central = true` needs a `kill_argument` on its current version and a stated
+  `novelty`; every L-id in `## Closest prior work` must exist; `result-to-claim` and `ara-rigor-reviewer` are
+  checked in the logs.
+- **Usage limits** (`autolab limit`): a refused usage window is read from the turn log; the runner waits until it
+  resets and tells the human once, instead of retrying every 45 minutes (first-test, 2026-10-21).
+- **Reviewer out of quota**: a refusal for quota pauses reviews for `reviewer.limit_pause_h` (6) hours and tells
+  the human once; `autolab review limit clear` resumes them. Nothing passes without its review. A reviewer from
+  the PI's own vendor is set with `independence = "same_vendor"`: its reviews cannot give grade A, and a
+  cross-vendor review stays due.
+- **Metrics**: candidates and findings by `origin`, share of lab-originated findings, audits, forced skills
+  never invoked. New candidate cards need `--origin`.
+
+Upgrading a project: `autolab skills mount`. New plans then need an audit (`[gates] require_novelty = false`
+turns that off) and the due rules apply (`[triggers] enabled = false`).
+
 ## 0.6.5 — 2026-10-20
 
 - **Wake rule**: forced PI turns are spaced to `[autonomy] blocked_max_idle_min` (180 min) only when

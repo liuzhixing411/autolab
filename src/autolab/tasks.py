@@ -40,9 +40,10 @@ def new(cfg: Config, title: str, student: str, task: str | None = None, stage: s
     if difficulty not in DIFFICULTY_MODEL:
         raise ValueError(f"difficulty must be one of {sorted(DIFFICULTY_MODEL)}")
     task = task or student
+    known = skills.student_tasks(cfg)
+    if task not in known:
+        raise ValueError(f"no route for task '{task}'; use one of {', '.join(known)}")
     req = skills.required(cfg, "student", stage, task)
-    if task == "experiment":                  # writing experiment code: tests first
-        req = req + [s for s in ("test-driven-development",) if s not in req]
     want = list(dict.fromkeys(req + (extra_skills or [])))
     avail = skills.skill_sources(cfg)
     missing = [s for s in want if s not in avail]
@@ -87,6 +88,10 @@ def check_skills_used(cfg: Config, card: Path) -> tuple[list[str], list[str]]:
         return [], []
     hmeta, _ = read_frontmatter(card)
     used = set(hmeta.get("skills_used", []))
+    # a result outside the predicted range is a bug until shown otherwise (first-test: 41 of 177 cards
+    # were marked `surprise`, `systematic-debugging` was invoked 13 times)
+    if hmeta.get("surprise") and tmeta.get("task") in ("experiment", "analysis"):
+        need = list(dict.fromkeys(need + ["systematic-debugging"]))
     problems = [f"required skill '{s}' not in skills_used (invoke it with the Skill tool, then list it)"
                 for s in need if s not in used]
     warnings: list[str] = []

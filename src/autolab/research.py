@@ -27,11 +27,14 @@ from autolab.config import Config
 from autolab.util import (FileLock, append_jsonl, now_iso, read_frontmatter, read_json, read_jsonl,
                           sha256_file, write_atomic, write_json)
 
-CARD_FIELDS = ("statement", "closest_work", "mechanism_difference", "evidence_for", "evidence_against",
-               "key_uncertainty", "discriminating_experiment", "cost_estimate", "continue_if", "pause_if", "kill_if")
+CARD_FIELDS = ("statement", "origin", "contribution", "closest_work", "mechanism_difference", "evidence_for",
+               "evidence_against", "key_uncertainty", "discriminating_experiment", "cost_estimate", "continue_if",
+               "pause_if", "kill_if", "novelty_audit")
 CARD_REQUIRED = ("statement", "closest_work", "mechanism_difference", "key_uncertainty",
                  "discriminating_experiment", "continue_if", "kill_if")
 STATUS = ("open", "selected", "paused", "killed", "supported")
+# who proposed a candidate: first-test could not tell, and most turning points came from the human
+ORIGINS = ("pi", "student", "reviewer", "human", "literature")
 
 
 def _cdir(cfg: Config) -> Path:
@@ -68,6 +71,8 @@ def card_problems(cfg: Config, hid: str) -> list[str]:
         return [f"no candidate card state/candidates/{hid}.md (`autolab candidate new {hid} \"...\"`)"]
     empty = [k for k in CARD_REQUIRED if not str(c.get(k, "")).strip() or "<<FILL" in str(c.get(k, ""))]
     out = [f"candidate {hid}: fill {', '.join(empty)}"] if empty else []
+    if "origin" in c and c["origin"] not in ORIGINS:          # cards from before 0.7 have no such field
+        out.append(f"candidate {hid}: origin must be one of {ORIGINS}")
     if c.get("status") == "killed":
         out.append(f"candidate {hid} is killed; reopen it with a recorded decision before testing it again")
     return out
@@ -80,6 +85,17 @@ def list_candidates(cfg: Config) -> list[dict]:
         out.append({k: c.get(k, "") for k in ("id", "status", "priority", "statement", "cost_estimate",
                                                "discriminating_experiment")})
     return out
+
+
+def set_field(cfg: Config, hid: str, key: str, value: str) -> None:
+    """Set one frontmatter field of a card, adding it to a card from an older version."""
+    p = _cdir(cfg) / f"{hid}.md"
+    text = p.read_text(encoding="utf-8")
+    line = f"{key} = {json.dumps(value, ensure_ascii=False)}"
+    new, n = re.subn(rf"(?m)^{re.escape(key)} = .*$", lambda _m: line, text, count=1)
+    if not n:
+        new = re.sub(r"\n\+\+\+\n", lambda _m: f"\n{line}\n+++\n", text, count=1)
+    write_atomic(p, new)
 
 
 def set_candidate(cfg: Config, hid: str, status: str, reason: str) -> None:

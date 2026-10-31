@@ -3,7 +3,8 @@ statement = "<<FILL: Under [conditions], [factor] changes [outcome] by [magnitud
 experiments = ["<<FILL: E001>>"]
 evidence = ["<<FILL: experiments/E001/results/metrics.json>>"]
 pi_grade = "<<FILL: A|B|C|D>>"
-central = false
+central = false              # true: the project's conclusions rest on it; needs `novelty` and a kill_argument review
+novelty = ""                 # the audit behind it (N001), or "none-claimed" for a measurement that claims nothing new
 
 [validation]
 # keys required by the domain pack (domain.toml → [validation].required_evidence), value = path
