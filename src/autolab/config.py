@@ -19,7 +19,9 @@ from autolab.paths import Layout
 
 DEFAULTS: dict[str, Any] = {
     "project": {"name": "unnamed", "domain": "generic", "site": "local"},
-    # Claude Code aliases resolve to the newest model of each family on any CLI version.
+    # Claude Code aliases resolve to the newest model of each family the installed CLI knows: on
+    # 2026-11-20 Claude Code 2.1.301 gave opus -> claude-opus-5-5, sonnet -> claude-sonnet-5-5 and
+    # haiku -> claude-haiku-5-5 (it predates Fable 5.2: `fable` still meant 5.1).
     "models": {
         "pi": "opus",
         "student_literature": "haiku",
@@ -44,12 +46,13 @@ DEFAULTS: dict[str, Any] = {
         "timeout_s": 3600,
         "tiers": {
             # light = non-verdict checks only (format, wording, citation syntax).
-            # Models offered to Codex on a ChatGPT account as of 2026-10-15 (~/.codex/models_cache.json).
+            # As of 2026-11-20 the Codex models page recommends GPT-6.2 Astra for demanding work; it needs
+            # Codex CLI 0.171.0 or later. `autolab doctor` checks each tier against ~/.codex/models_cache.json.
             "light": {"model": "gpt-6-luna", "effort": "high", "verdict_allowed": False},
-            "regular": {"model": "gpt-6-astra", "effort": "xhigh", "verdict_allowed": True},
-            "deep": {"model": "gpt-6-astra", "effort": "ultra", "verdict_allowed": True},
+            "regular": {"model": "gpt-6.2-astra", "effort": "xhigh", "verdict_allowed": True},
+            "deep": {"model": "gpt-6.2-astra", "effort": "ultra", "verdict_allowed": True},
         },
-        "fallback_models": ["gpt-5.6-sol"],
+        "fallback_models": ["gpt-6-astra"],
         "tasks": {
             "format_check": "light", "citation_format": "light", "wording": "light",
             "section_review": "regular", "review_loop_round": "regular",

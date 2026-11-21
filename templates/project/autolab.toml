@@ -23,17 +23,18 @@ billing = "api"                  # api | subscription; never inferred from the C
 unknown_call_usd = 1.0            # provisional charge when actual API cost is unavailable
 # command = ["codex", "exec", "-m", "{model}", "-c", "model_reasoning_effort={effort}", "--sandbox", "read-only",
 #            "--skip-git-repo-check", "-C", "{workdir}", "-o", "{out_file}", "-"]   # the default; prompt arrives on stdin
-# Tiers by difficulty. light = non-verdict checks only. Models your Codex account offers: ~/.codex/models_cache.json
+# Tiers by difficulty. light = non-verdict checks only. Models your Codex CLI is offered: ~/.codex/models_cache.json
+# (`autolab doctor` checks them). GPT-6.2 Astra needs Codex CLI 0.171.0 or later; with an older CLI use gpt-6-astra.
 [reviewer.tiers.light]
 model = "gpt-6-luna"
 effort = "high"
 verdict_allowed = false
 [reviewer.tiers.regular]
-model = "gpt-6-astra"
+model = "gpt-6.2-astra"
 effort = "xhigh"
 verdict_allowed = true
 [reviewer.tiers.deep]
-model = "gpt-6-astra"
+model = "gpt-6.2-astra"
 effort = "ultra"
 verdict_allowed = true
 

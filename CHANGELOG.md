@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.7.2 — 2026-11-20
+
+- **Latest reviewer models**: regular and deep reviews use GPT-6.2 Astra, which the Codex models page recommends for
+  demanding work; it needs Codex CLI 0.171.0 or later. `autolab doctor` now checks each tier's model and effort against
+  the catalog the installed CLI was given (`~/.codex/models_cache.json`): CLI 0.160.0 is not offered GPT-6.2 at all.
+  Claude models are unchanged: on Claude Code 2.1.301 the aliases resolve to Opus 5.5, Sonnet 5.5 and Haiku 5.5.
+- **Sandbox tools**: `autolab doctor` checks for `bwrap` and `socat`. Without `socat` a required sandbox stops every
+  turn at once (first-test, 2026-10-19; Negishi login05 on 2026-11-20).
+- **Deny rules**: the `Write(...)` rules for the WeChat cache were ignored by Claude Code, which matches file writes by
+  `Edit(...)` rules only; they are gone, and the `Edit(...)` rules cover those writes.
+
 ## 0.7.1 — 2026-10-31
 
 Two holes the retrospective audit of first-test showed.

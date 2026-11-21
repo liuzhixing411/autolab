@@ -396,7 +396,7 @@ class Reviewer(unittest.TestCase):
         self.assertEqual(r("claim_support")["tier"], "deep")
         self.assertEqual(r("format_check", central=True)["tier"], "regular")
         self.assertEqual(r("section_review", text="interface capturing of the cavitation bubble")["tier"], "deep")
-        self.assertEqual(r("section_review", disagreement=True)["model"], "gpt-6-astra")
+        self.assertEqual(r("section_review", disagreement=True)["model"], "gpt-6.2-astra")
         self.assertEqual(r("claim_support")["effort"], "ultra")
 
     def test_verdict_never_on_light_tier(self):
@@ -466,7 +466,7 @@ pi_grade = "{grade}"
         f = self.cfg.layout.findings / res["finding"]
         self.assertTrue((f / "finding.json").is_file())
         self.assertIn("We^0.52", (self.cfg.layout.findings / "INDEX.md").read_text(encoding="utf-8"))
-        self.assertEqual(read_json(f / "finding.json")["reviewer_model"], "gpt-6-astra")
+        self.assertEqual(read_json(f / "finding.json")["reviewer_model"], "gpt-6.2-astra")
 
     def test_a_review_from_the_labs_own_vendor_cannot_give_grade_a(self):
         toml = self.root / "autolab.toml"

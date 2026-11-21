@@ -153,8 +153,8 @@ def _write_settings(cfg: Config) -> None:
     # Write/Edit tools: human-owned files are denied outright (deny beats acceptEdits)
     settings["permissions"]["deny"] = DENY + [f"Edit(//{root.lstrip('/')}/{p})" for p in PROTECTED_WRITE]
     weixin_root = (Path.home() / ".cache" / "autolab" / "weixin").as_posix()
-    settings["permissions"]["deny"] += [f"{tool}(//{weixin_root.lstrip('/')}/**)"
-                                         for tool in ("Read", "Edit", "Write")]
+    # Edit rules cover every file-writing tool; a Write(...) deny rule is ignored by Claude Code
+    settings["permissions"]["deny"] += [f"{tool}(//{weixin_root.lstrip('/')}/**)" for tool in ("Read", "Edit")]
     # `autolab lit` alone reads the API keys; the guard folder holds the audits' blind controls
     from autolab.guard import _dir
     keys_file = Path(cfg["literature"]["keys_file"]).expanduser().as_posix()
@@ -294,8 +294,16 @@ def doctor(cfg: Config) -> list[tuple[str, bool, str]]:
             v = subprocess.run([exe, "--version"], capture_output=True, text=True)
             detail = (v.stdout or v.stderr).strip()
         add(f"reviewer CLI ({rv['command'][0]})", exe, detail or "not on PATH")
+        if rv["backend"] == "codex":
+            add("reviewer models offered to this Codex CLI", *codex_offer(cfg))
     else:
         add(f"reviewer backend = {rv['backend']}", True, "mock backend: reviews are not real")
+    if cfg.data.get("agents", {}).get("sandbox") and sys.platform.startswith("linux"):
+        # first-test 2026-10-19: a turn on a login node without socat ended at once, the sandbox being required
+        gone = [t for t in ("bwrap", "socat") if not shutil.which(t)]
+        add("sandbox tools (bwrap, socat)", not gone,
+            f"missing here ({os.uname().nodename}): {', '.join(gone)}. Claude Code refuses to start a turn: run the loop "
+            "on a host that has them, or install them for your user" if gone else "")
     for tool in ("sbatch", "sacct", "squeue"):
         add(f"slurm: {tool}", shutil.which(tool), "")
     add("slurm.account set", bool(cfg["slurm"]["account"]), "fill from `slist`")
@@ -305,6 +313,25 @@ def doctor(cfg: Config) -> list[tuple[str, bool, str]]:
         "" if trusted else "run `claude` once in this folder and accept the trust prompt "
                            "(otherwise permissions and hooks are not loaded)")
     return checks
+
+
+def codex_offer(cfg: Config) -> tuple[bool, str]:
+    """Each tier's model and effort must be in the catalog the installed Codex CLI was given
+    (~/.codex/models_cache.json): the catalog depends on the CLI version (GPT-6.2 came with 0.171.0)."""
+    f = Path.home() / ".codex" / "models_cache.json"
+    try:
+        data = json.loads(f.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return False, f"{f} unreadable: run `codex` once so it fetches the model catalog"
+    offered = {m.get("slug"): {x.get("effort") for x in m.get("supported_reasoning_levels") or []}
+               for m in data.get("models", []) if isinstance(m, dict)}
+    missing = sorted({f"{s['model']} at {s['effort']}" for s in cfg["reviewer"]["tiers"].values()
+                      if s["effort"] not in offered.get(s["model"], set())})
+    version = data.get("client_version", "?")
+    if missing:
+        return False, (f"not offered to Codex CLI {version}: {', '.join(missing)}. Upgrade the CLI, or set "
+                       "[reviewer.tiers] to models it lists")
+    return True, f"Codex CLI {version}"
 
 
 def claude_trusted(root: Path) -> bool:

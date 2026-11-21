@@ -1,6 +1,7 @@
 """0.7: usage limits, literature tools, novelty audits, due rules, skill routing. No network or model calls."""
 import json
 import subprocess
+import sys
 import tempfile
 import time
 import unittest
@@ -913,6 +914,38 @@ none
         run = (self.cfg.layout.skills_mount / "run-experiment" / "SKILL.md").read_text(encoding="utf-8")
         self.assertNotIn("do not exist in this lab", run)
         self.assertNotIn("do not exist in this lab", (fixtures.FW / "core/skills/kill-argument/SKILL.md").read_text(encoding="utf-8"))
+
+    def test_doctor_checks_the_models_the_codex_cli_is_offered(self):
+        home = Path(tempfile.mkdtemp())
+        catalog = {"client_version": "0.160.0", "models": [
+            {"slug": "gpt-6-luna", "supported_reasoning_levels": [{"effort": "high"}]},
+            {"slug": "gpt-6-astra", "supported_reasoning_levels": [{"effort": e} for e in ("xhigh", "ultra")]}]}
+        write(home / ".codex" / "models_cache.json", json.dumps(catalog))
+        with patch.object(Path, "home", return_value=home):
+            ok, detail = project.codex_offer(self.cfg)
+            self.assertFalse(ok)
+            self.assertIn("gpt-6.2-astra at ultra", detail)
+            self.assertIn("0.160.0", detail)
+            for tier in ("regular", "deep"):
+                self.cfg.data["reviewer"]["tiers"][tier]["model"] = "gpt-6-astra"
+            self.assertEqual(project.codex_offer(self.cfg), (True, "Codex CLI 0.160.0"))
+            (home / ".codex" / "models_cache.json").unlink()
+            self.assertFalse(project.codex_offer(self.cfg)[0])
+
+    def test_doctor_names_missing_sandbox_tools(self):
+        self.cfg.data.setdefault("agents", {})["sandbox"] = True
+        with patch.object(project.shutil, "which", side_effect=lambda t: None if t == "socat" else f"/usr/bin/{t}"):
+            rows = {name: (ok, detail) for name, ok, detail in project.doctor(self.cfg)}
+        if sys.platform.startswith("linux"):
+            ok, detail = rows["sandbox tools (bwrap, socat)"]
+            self.assertFalse(ok)
+            self.assertIn("socat", detail)
+
+    def test_no_ignored_write_deny_rules(self):
+        project._write_settings(self.cfg)
+        deny = read_json(self.cfg.layout.claude / "settings.json")["permissions"]["deny"]
+        self.assertFalse([r for r in deny if r.startswith("Write(")])
+        self.assertTrue(any(r.startswith("Edit(") and "weixin" in r for r in deny))
 
     def test_doctor_names_what_is_broken(self):
         rows = {r["skill"]: r for r in skills.doctor(self.cfg)}
